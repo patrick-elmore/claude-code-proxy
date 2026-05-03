@@ -1,0 +1,18 @@
+.context/
+.claude/*
+!.claude/agents/
+!.claude/skills/
+!.claude/hooks/
+!.claude/guides/
+!.claude/settings.json
+.teamwork/
+
+# .NET (add as the project takes shape)
+bin/
+obj/
+*.user
+*.suo
+.vs/
+publish/
+logs/
+dumps/
