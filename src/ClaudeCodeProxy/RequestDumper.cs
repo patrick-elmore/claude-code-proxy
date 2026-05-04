@@ -4,59 +4,69 @@ using Microsoft.Extensions.Options;
 
 namespace ClaudeCodeProxy;
 
+/// <summary>
+/// Writes inbound request bodies (and the post-mutation body when applicable)
+/// to disk for debugging. Auto-disables after Dump:MaxRequests requests.
+///
+/// File naming:
+/// - {timestamp}-original.json   — body as received (pretty JSON if parsed, raw bytes otherwise)
+/// - {timestamp}-mutated.json    — body after PromptRewriter, only when mutation happened
+/// - {timestamp}-path.txt        — request path + query, written once per request
+/// </summary>
 public sealed class RequestDumper(IOptionsMonitor<DumpOptions> options, ILogger<RequestDumper> logger)
 {
     private int _count;
     private static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true };
 
-    public async Task DumpAsync(string label, JsonNode? node, CancellationToken ct)
-    {
-        var opts = options.CurrentValue;
-        if (!opts.Enabled || _count >= opts.MaxRequests) return;
-
-        if (label == "original")
-            Interlocked.Increment(ref _count);
-
-        try
-        {
-            Directory.CreateDirectory(opts.OutputPath);
-            var file = Path.Combine(opts.OutputPath,
-                $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}-{label}.json");
-            var json = node?.ToJsonString(Pretty) ?? "null";
-            await File.WriteAllTextAsync(file, json, ct);
-            logger.LogDebug("Dumped {Label} request body to {File}", label, file);
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to write debug dump ({Label})", label);
-        }
-    }
-
     /// <summary>
-    /// Dumps the raw request body bytes for non-Anthropic-format paths (e.g. Vertex AI).
-    /// Records the path so we can correlate dumps with their endpoint.
+    /// Writes a labeled dump.
+    /// Pass `node` for JSON content (pretty-printed), `rawBytes` for raw fallback,
+    /// or both (node wins). `requestPath` is written as a sidecar file when set —
+    /// only the "original" call should pass it to avoid duplicate path files.
     /// </summary>
-    public async Task DumpRawAsync(string requestPath, byte[] bytes, CancellationToken ct)
+    public async Task DumpAsync(
+        string label,
+        JsonNode? node,
+        byte[]? rawBytes,
+        string? requestPath,
+        CancellationToken ct)
     {
         var opts = options.CurrentValue;
-        if (!opts.Enabled || _count >= opts.MaxRequests) return;
+        if (!opts.Enabled) return;
 
-        Interlocked.Increment(ref _count);
+        // Cap is on requests, not files. "original" counts; "mutated" rides
+        // along with whichever original it was paired with — if the original
+        // was within budget, its mutated counterpart is too.
+        if (label == "original")
+        {
+            if (_count >= opts.MaxRequests) return;
+            Interlocked.Increment(ref _count);
+        }
 
         try
         {
             Directory.CreateDirectory(opts.OutputPath);
             var ts = $"{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss-fff}";
-            var bodyFile = Path.Combine(opts.OutputPath, $"{ts}-raw.json");
-            var pathFile = Path.Combine(opts.OutputPath, $"{ts}-raw.path.txt");
-            await File.WriteAllBytesAsync(bodyFile, bytes, ct);
-            await File.WriteAllTextAsync(pathFile, requestPath, ct);
-            logger.LogDebug("Dumped raw body ({Bytes} bytes, path {Path}) to {File}",
-                bytes.Length, requestPath, bodyFile);
+            var bodyFile = Path.Combine(opts.OutputPath, $"{ts}-{label}.json");
+
+            if (node is not null)
+                await File.WriteAllTextAsync(bodyFile, node.ToJsonString(Pretty), ct);
+            else if (rawBytes is not null)
+                await File.WriteAllBytesAsync(bodyFile, rawBytes, ct);
+            else
+                return;
+
+            if (requestPath is not null)
+            {
+                var pathFile = Path.Combine(opts.OutputPath, $"{ts}-path.txt");
+                await File.WriteAllTextAsync(pathFile, requestPath, ct);
+            }
+
+            logger.LogDebug("Dumped {Label} to {File}", label, bodyFile);
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Failed to write raw dump");
+            logger.LogWarning(ex, "Failed to write dump ({Label})", label);
         }
     }
 }

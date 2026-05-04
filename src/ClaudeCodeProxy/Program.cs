@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClaudeCodeProxy;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,9 +24,8 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.Configure<ProxyOptions>(builder.Configuration.GetSection("Proxy"));
 builder.Services.Configure<DumpOptions>(builder.Configuration.GetSection("Dump"));
 
-builder.Services.AddHttpClient("anthropic", client =>
+builder.Services.AddHttpClient("vertex", client =>
 {
-    client.BaseAddress = new Uri("https://api.anthropic.com");
     client.Timeout = Timeout.InfiniteTimeSpan;
 });
 
@@ -33,64 +34,79 @@ builder.Services.AddSingleton<RequestDumper>();
 
 var app = builder.Build();
 
-// Primary route — mutate system prompt then forward
-app.MapPost("/v1/messages", async (
+// Single catch-all. Mutation is body-shape-driven, not path-driven —
+// any request whose body parses as JSON with a `system` array is a
+// mutation candidate. Everything else is forwarded verbatim.
+app.Map("{**path}", async (
     HttpContext ctx,
     IHttpClientFactory httpClientFactory,
     PromptRewriter rewriter,
-    RequestDumper dumper) =>
+    RequestDumper dumper,
+    IOptionsMonitor<ProxyOptions> proxyOpts,
+    ILogger<Program> log) =>
 {
-    var node = await JsonNode.ParseAsync(ctx.Request.Body, cancellationToken: ctx.RequestAborted);
-
-    await dumper.DumpAsync("original", node, ctx.RequestAborted);
-    await rewriter.RewriteAsync(node);
-    await dumper.DumpAsync("mutated", node, ctx.RequestAborted);
-
-    var upstream = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
-    {
-        Content = new StringContent(node?.ToJsonString() ?? "{}", Encoding.UTF8, "application/json")
-    };
-    HeaderCopying.CopyRequestHeaders(ctx.Request, upstream);
-
-    var client = httpClientFactory.CreateClient("anthropic");
-    using var response = await client.SendAsync(
-        upstream, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
-
-    ctx.Response.StatusCode = (int)response.StatusCode;
-    HeaderCopying.CopyResponseHeaders(response, ctx.Response);
-    await response.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
-});
-
-// Transparent passthrough for all other paths (e.g. /v1/models, Vertex paths)
-// Buffers the body when dumping is enabled so the wire format can be inspected.
-app.Map("{**catchAll}", async (HttpContext ctx, IHttpClientFactory httpClientFactory, RequestDumper dumper) =>
-{
-    var upstream = new HttpRequestMessage(
-        new HttpMethod(ctx.Request.Method),
-        ctx.Request.Path.Value + ctx.Request.QueryString.Value);
-
+    var requestPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
     var hasBody = ctx.Request.ContentLength is > 0
         || ctx.Request.Headers.ContainsKey("Transfer-Encoding");
 
+    byte[] forwardBytes = Array.Empty<byte>();
+    JsonNode? node = null;
+    var mutated = false;
+
     if (hasBody)
     {
-        // Buffer so we can both dump and forward
+        // Buffer the body so we can both inspect/mutate and forward.
         using var ms = new MemoryStream();
         await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
-        var bytes = ms.ToArray();
+        var originalBytes = ms.ToArray();
 
-        await dumper.DumpRawAsync(
-            ctx.Request.Path.Value + ctx.Request.QueryString.Value,
-            bytes, ctx.RequestAborted);
+        try { node = JsonNode.Parse(originalBytes); }
+        catch (JsonException) { /* not JSON — leave node null, forward as bytes */ }
 
-        upstream.Content = new ByteArrayContent(bytes);
+        await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
+
+        if (node is not null)
+        {
+            mutated = await rewriter.RewriteAsync(node);
+            if (mutated)
+            {
+                forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
+                await dumper.DumpAsync("mutated", node, null, null, ctx.RequestAborted);
+            }
+            else
+            {
+                forwardBytes = originalBytes;
+            }
+        }
+        else
+        {
+            forwardBytes = originalBytes;
+        }
+    }
+
+    var baseUrl = proxyOpts.CurrentValue.VertexBaseUrl?.TrimEnd('/');
+    if (string.IsNullOrWhiteSpace(baseUrl))
+    {
+        log.LogError("Proxy:VertexBaseUrl is not configured");
+        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await ctx.Response.WriteAsync("Proxy misconfigured: Proxy:VertexBaseUrl is empty.");
+        return;
+    }
+
+    var upstream = new HttpRequestMessage(
+        new HttpMethod(ctx.Request.Method),
+        baseUrl + requestPath);
+
+    if (forwardBytes.Length > 0)
+    {
+        upstream.Content = new ByteArrayContent(forwardBytes);
         if (ctx.Request.ContentType is { Length: > 0 } ct)
             upstream.Content.Headers.TryAddWithoutValidation("Content-Type", ct);
     }
 
     HeaderCopying.CopyRequestHeaders(ctx.Request, upstream);
 
-    var client = httpClientFactory.CreateClient("anthropic");
+    var client = httpClientFactory.CreateClient("vertex");
     using var response = await client.SendAsync(
         upstream, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
 
