@@ -23,6 +23,7 @@ builder.WebHost.ConfigureKestrel(options =>
 
 builder.Services.Configure<ProxyOptions>(builder.Configuration.GetSection("Proxy"));
 builder.Services.Configure<DumpOptions>(builder.Configuration.GetSection("Dump"));
+builder.Services.Configure<StatsOptions>(builder.Configuration.GetSection("Stats"));
 
 builder.Services.AddHttpClient("vertex", client =>
 {
@@ -31,8 +32,21 @@ builder.Services.AddHttpClient("vertex", client =>
 
 builder.Services.AddSingleton<PromptRewriter>();
 builder.Services.AddSingleton<RequestDumper>();
+builder.Services.AddSingleton<StatsTracker>();
+builder.Services.AddSingleton<UsageLogger>();
 
 var app = builder.Build();
+
+// Stats endpoints — must be registered before the catch-all so ASP.NET's
+// specificity-based route matching picks these literal paths over `{**path}`.
+// The `/__` prefix avoids any collision with Vertex paths (which start with /projects/).
+var statsJsonOptions = new JsonSerializerOptions
+{
+    PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+    WriteIndented = true,
+};
+app.MapGet("/stats", (StatsTracker st) => Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot()), "text/html; charset=utf-8"));
+app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
 
 // Single catch-all. Mutation is body-shape-driven, not path-driven —
 // any request whose body parses as JSON with a `system` array is a
@@ -42,6 +56,7 @@ app.Map("{**path}", async (
     IHttpClientFactory httpClientFactory,
     PromptRewriter rewriter,
     RequestDumper dumper,
+    UsageLogger usageLogger,
     IOptionsMonitor<ProxyOptions> proxyOpts,
     ILogger<Program> log) =>
 {
@@ -60,27 +75,37 @@ app.Map("{**path}", async (
         await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
         var originalBytes = ms.ToArray();
 
-        try { node = JsonNode.Parse(originalBytes); }
-        catch (JsonException) { /* not JSON — leave node null, forward as bytes */ }
-
-        await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
-
-        if (node is not null)
+        if (!proxyOpts.CurrentValue.Enabled)
         {
-            mutated = await rewriter.RewriteAsync(node);
-            if (mutated)
+            // Disabled mode: forward bytes verbatim. Still dump if requested
+            // (lets you inspect raw traffic without mutation interfering).
+            await dumper.DumpAsync("original", null, originalBytes, requestPath, ctx.RequestAborted);
+            forwardBytes = originalBytes;
+        }
+        else
+        {
+            try { node = JsonNode.Parse(originalBytes); }
+            catch (JsonException) { /* not JSON — leave node null, forward as bytes */ }
+
+            await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
+
+            if (node is not null)
             {
-                forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
-                await dumper.DumpAsync("mutated", node, null, null, ctx.RequestAborted);
+                mutated = await rewriter.RewriteAsync(node);
+                if (mutated)
+                {
+                    forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
+                    await dumper.DumpAsync("mutated", node, null, null, ctx.RequestAborted);
+                }
+                else
+                {
+                    forwardBytes = originalBytes;
+                }
             }
             else
             {
                 forwardBytes = originalBytes;
             }
-        }
-        else
-        {
-            forwardBytes = originalBytes;
         }
     }
 
@@ -112,7 +137,17 @@ app.Map("{**path}", async (
 
     ctx.Response.StatusCode = (int)response.StatusCode;
     HeaderCopying.CopyResponseHeaders(response, ctx.Response);
-    await response.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+
+    // Baseline visibility: one log line per request regardless of whether the
+    // response is SSE. UsageLogger only emits when it parses a message_start;
+    // this gives us proof-of-life for every forwarded request.
+    log.LogInformation("{Method} {Path} -> {Status}",
+        ctx.Request.Method, requestPath, (int)response.StatusCode);
+
+    // Forward the response stream to the client byte-for-byte while passively
+    // tapping SSE events for prompt-cache usage data. Logs one line per request.
+    await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
+    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, ctx.RequestAborted);
 });
 
 app.Run();
