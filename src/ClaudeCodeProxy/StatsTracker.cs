@@ -103,6 +103,100 @@ public sealed class StatsTracker
         }
     }
 
+    /// <summary>
+    /// Returns the live in-memory snapshot for today, or a snapshot loaded from disk
+    /// for any historical date. Returns null if no file exists for the requested date.
+    /// </summary>
+    public StatsSnapshot? GetSnapshotForDate(DateOnly date)
+    {
+        lock (_lock)
+        {
+            if (date == _currentDate) return GetSnapshot();
+        }
+
+        var path = FilePath(date);
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var node = JsonNode.Parse(File.ReadAllText(path));
+            if (node is not JsonObject root) return null;
+
+            MigrateCacheCreationKey(root["totals"] as JsonObject);
+            if (root["by_model"] is JsonObject byModel)
+                foreach (var prop in byModel)
+                    MigrateCacheCreationKey(prop.Value as JsonObject);
+            if (root["hourly"] is JsonArray hourly)
+                foreach (var item in hourly)
+                    MigrateCacheCreationKey(item as JsonObject);
+
+            var file = root.Deserialize<FileSnapshot>(WriteOpts);
+            if (file is null) return null;
+
+            var totalCacheCreation = file.Totals.CacheCreation5m + file.Totals.CacheCreation1h;
+            var totalIn = file.Totals.InputUncached + file.Totals.CacheRead + totalCacheCreation;
+            var hitPct = totalIn > 0 ? 100.0 * file.Totals.CacheRead / totalIn : 0;
+            var totalRequests = file.RequestCount + file.FailedCount;
+            var avgDuration = totalRequests > 0 ? (double)file.TotalDurationMs / totalRequests : 0;
+
+            return new StatsSnapshot(
+                Date: file.Date,
+                StartedAt: file.StartedAt,
+                UptimeSeconds: -1, // sentinel: historical, uptime not meaningful
+                RequestCount: file.RequestCount,
+                FailedCount: file.FailedCount,
+                Totals: file.Totals,
+                HitRatePct: Math.Round(hitPct, 1),
+                AvgDurationMs: Math.Round(avgDuration, 0),
+                ByModel: file.ByModel.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp =>
+                    {
+                        var mb = kvp.Value;
+                        var mCacheCreate = mb.CacheCreation5m + mb.CacheCreation1h;
+                        var mTotal = mb.InputUncached + mb.CacheRead + mCacheCreate;
+                        var mHit = mTotal > 0 ? 100.0 * mb.CacheRead / mTotal : 0;
+                        var mReqs = mb.Requests + mb.Failed;
+                        var mAvg = mReqs > 0 ? (double)mb.TotalDurationMs / mReqs : 0;
+                        return new ModelSnapshot(mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead, mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(mHit, 1), Math.Round(mAvg, 0));
+                    }),
+                Hourly: file.Hourly
+                    .OrderByDescending(h => h.Hour)
+                    .Select(h =>
+                    {
+                        var bCacheCreate = h.CacheCreation5m + h.CacheCreation1h;
+                        var totalHourIn = h.InputUncached + h.CacheRead + bCacheCreate;
+                        var hourHit = totalHourIn > 0 ? 100.0 * h.CacheRead / totalHourIn : 0;
+                        var hourReqs = h.Requests + h.FailedCount;
+                        var hourAvg = hourReqs > 0 ? (double)h.TotalDurationMs / hourReqs : 0;
+                        return new HourlyStats(h.Hour, h.Requests, h.FailedCount, Math.Round(hourHit, 1), Math.Round(hourAvg, 0), h.CacheRead, h.CacheCreation5m, h.CacheCreation1h, h.InputUncached, h.Output);
+                    })
+                    .ToList()
+            );
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load historical stats for {Date}", date);
+            return null;
+        }
+    }
+
+    /// <summary>Returns all dates for which a stats file exists, in ascending order.</summary>
+    public IReadOnlyList<DateOnly> GetAvailableDates()
+    {
+        var dates = new List<DateOnly>();
+        foreach (var file in Directory.EnumerateFiles(_outputPath, "stats-????????.json"))
+        {
+            var name = Path.GetFileNameWithoutExtension(file); // "stats-20260504"
+            if (name.Length == 14 && DateOnly.TryParseExact(
+                    name[6..], "yyyyMMdd", null,
+                    System.Globalization.DateTimeStyles.None, out var date))
+                dates.Add(date);
+        }
+        dates.Sort();
+        return dates;
+    }
+
     public StatsSnapshot GetSnapshot()
     {
         lock (_lock)

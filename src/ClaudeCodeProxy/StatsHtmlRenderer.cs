@@ -6,7 +6,8 @@ namespace ClaudeCodeProxy;
 
 internal static class StatsHtmlRenderer
 {
-    public static string Render(StatsSnapshot s, PricingCatalog pricing)
+    public static string Render(StatsSnapshot s, PricingCatalog pricing,
+        DateOnly? prevDate = null, DateOnly? nextDate = null)
     {
         var totalIn = s.Totals.InputUncached + s.Totals.CacheRead + s.Totals.CacheCreation;
 
@@ -44,6 +45,10 @@ internal static class StatsHtmlRenderer
             td.num, th.num { text-align: right; }
             td.mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .92rem; }
             .muted { color: #888; font-size: .9rem; }
+            nav { margin: .5rem 0 1rem; font-size: .9rem; }
+            nav a { color: #9ab; text-decoration: none; margin-right: 1rem; }
+            nav a:hover { text-decoration: underline; }
+            nav .sep { color: #555; margin-right: 1rem; }
             .pair { margin: .25rem 0; }
             .pair .k { color: #999; margin-right: .5rem; }
             .pair .v { font-weight: 600; color: #fff; }
@@ -59,7 +64,24 @@ internal static class StatsHtmlRenderer
             """);
 
         sb.Append("<h1>Claude Code Proxy</h1>");
-        sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; uptime: {Esc(FormatUptime(s.UptimeSeconds))}</p>");
+
+        // Date navigation
+        var isHistorical = s.UptimeSeconds < 0;
+        var uptimePart = isHistorical ? "historical" : $"uptime: {Esc(FormatUptime(s.UptimeSeconds))}";
+        sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; {uptimePart}</p>");
+        sb.Append("<nav>");
+        if (prevDate.HasValue)
+            sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a>");
+        if (prevDate.HasValue && (nextDate.HasValue || isHistorical))
+            sb.Append("<span class=\"sep\">|</span>");
+        if (isHistorical)
+            sb.Append("<a href=\"/stats\">Today</a>");
+        if (nextDate.HasValue)
+        {
+            if (isHistorical) sb.Append("<span class=\"sep\">|</span>");
+            sb.Append($"<a href=\"/stats/{nextDate.Value:yyyy-MM-dd}\">{nextDate.Value:yyyy-MM-dd} &#8594;</a>");
+        }
+        sb.Append("</nav>");
 
         // ── Today ────────────────────────────────────────────────────────────
         sb.Append("<h2>Today</h2>");

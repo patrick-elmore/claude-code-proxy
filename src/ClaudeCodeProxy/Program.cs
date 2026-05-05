@@ -46,8 +46,31 @@ var statsJsonOptions = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     WriteIndented = true,
 };
-app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) => Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing), "text/html; charset=utf-8"));
+app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) =>
+{
+    var (prev, next) = AdjacentDates(st, DateOnly.FromDateTime(DateTime.Now));
+    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, prev, next), "text/html; charset=utf-8");
+});
+
 app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
+
+app.MapGet("/stats/{date}", (string date, StatsTracker st, PricingCatalog pricing) =>
+{
+    if (!DateOnly.TryParseExact(date, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d))
+        return Results.BadRequest("Date must be yyyy-MM-dd.");
+    var snapshot = st.GetSnapshotForDate(d);
+    if (snapshot is null) return Results.NotFound($"No stats for {date}.");
+    var (prev, next) = AdjacentDates(st, d);
+    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, prev, next), "text/html; charset=utf-8");
+});
+
+app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
+{
+    if (!DateOnly.TryParseExact(date, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d))
+        return Results.BadRequest("Date must be yyyy-MM-dd.");
+    var snapshot = st.GetSnapshotForDate(d);
+    return snapshot is null ? Results.NotFound($"No stats for {date}.") : Results.Json(snapshot, statsJsonOptions);
+});
 
 // Single catch-all. Mutation is body-shape-driven, not path-driven —
 // any request whose body parses as JSON with a `system` array is a
@@ -163,6 +186,20 @@ app.Map("{**path}", async (
 });
 
 app.Run();
+
+// Returns the adjacent available dates for nav links. Today is always treated
+// as the trailing edge (no future), so next is null when target == today.
+static (DateOnly? prev, DateOnly? next) AdjacentDates(StatsTracker st, DateOnly target)
+{
+    var all = st.GetAvailableDates();
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    var idx = ((IList<DateOnly>)all).IndexOf(target);
+    DateOnly? prev = null, next = null;
+    if (idx > 0) prev = all[idx - 1];
+    else if (idx < 0 && all.Count > 0) prev = all[^1]; // target not in list (no file yet for today)
+    if (idx >= 0 && idx < all.Count - 1 && target != today) next = all[idx + 1];
+    return (prev, next);
+}
 
 // Extracts the model name from a Vertex path like:
 // /projects/.../models/claude-opus-4-7:streamRawPredict
