@@ -6,9 +6,27 @@ namespace ClaudeCodeProxy;
 
 internal static class StatsHtmlRenderer
 {
-    public static string Render(StatsSnapshot s)
+    public static string Render(StatsSnapshot s, PricingCatalog pricing)
     {
         var totalIn = s.Totals.InputUncached + s.Totals.CacheRead + s.Totals.CacheCreation;
+
+        // ── Per-model cost (exact) and day total ──────────────────────────────
+        var perModelCost = new Dictionary<string, decimal>(s.ByModel.Count);
+        decimal dayTotalCost = 0m;
+        foreach (var (model, m) in s.ByModel)
+        {
+            var cost = pricing.CalculateCostUsd(model, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output);
+            perModelCost[model] = cost;
+            dayTotalCost += cost;
+        }
+
+        // ── Blended per-token rates from today's by_model mix ─────────────────
+        // Hourly buckets don't carry per-model breakdown, so per-hour cost is
+        // computed by applying a token-share-weighted blended rate from today's
+        // by_model totals. Approximate (an hour skewed toward one model is mis-
+        // attributed at the daily mix) but reasonable for at-a-glance use.
+        var blended = ComputeBlendedRates(s, pricing);
+
         var sb = new StringBuilder(8192);
 
         sb.Append($$"""
@@ -17,19 +35,22 @@ internal static class StatsHtmlRenderer
             <title>Claude Code Proxy — {{Esc(s.Date)}}</title>
             <style>
             html { background: #1a1a1a; }
-            body { font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; color: #e0e0e0; background: #1a1a1a; }
+            body { font-family: system-ui, -apple-system, sans-serif; max-width: 980px; margin: 1.5rem auto; padding: 0 1rem; color: #e0e0e0; background: #1a1a1a; }
             h1 { font-size: 1.4rem; margin: 0 0 .25rem; color: #fff; }
             h2 { font-size: 1.05rem; margin: 1.75rem 0 .25rem; border-bottom: 1px solid #333; padding-bottom: .25rem; color: #fff; }
             table { border-collapse: collapse; width: 100%; margin-top: .25rem; }
             th, td { text-align: left; padding: .3rem .55rem; border-bottom: 1px solid #2a2a2a; font-variant-numeric: tabular-nums; }
             th { background: #262626; font-weight: 600; color: #ddd; }
             td.num, th.num { text-align: right; }
+            td.mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: .92rem; }
             .muted { color: #888; font-size: .9rem; }
             .pair { margin: .25rem 0; }
             .pair .k { color: #999; margin-right: .5rem; }
             .pair .v { font-weight: 600; color: #fff; }
             .hit { color: #4caf82; }
             .warn { color: #d68a04; }
+            .err { color: #e05252; }
+            .cost { color: #d4b85e; }
             footer { margin-top: 2rem; font-size: .85rem; color: #777; }
             footer a { color: #9ab; text-decoration: none; }
             footer a:hover { text-decoration: underline; }
@@ -37,13 +58,21 @@ internal static class StatsHtmlRenderer
             </head><body>
             """);
 
-        sb.Append($"<h1>Claude Code Proxy</h1>");
+        sb.Append("<h1>Claude Code Proxy</h1>");
         sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; uptime: {Esc(FormatUptime(s.UptimeSeconds))}</p>");
 
+        // ── Today ────────────────────────────────────────────────────────────
         sb.Append("<h2>Today</h2>");
-        sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(s.RequestCount)}</span></div>");
-        sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(s.HitRatePct)}\">{s.HitRatePct:F0}%</span> <span class=\"muted\">on {N0(totalIn)} input tokens</span></div>");
 
+        var failedSuffix = s.FailedCount > 0
+            ? $" <span class=\"muted err\">({N0(s.FailedCount)} failed)</span>"
+            : "";
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(s.RequestCount)}</span>{failedSuffix}</div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(s.HitRatePct)}\">{s.HitRatePct:F0}%</span> <span class=\"muted\">on {N0(totalIn)} input tokens</span></div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">avg latency</span><span class=\"v\">{s.AvgDurationMs:F0} ms</span></div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">total cost</span><span class=\"v cost\">{Money(dayTotalCost)}</span></div>");
+
+        // ── Token totals ─────────────────────────────────────────────────────
         sb.Append("<h2>Token totals</h2>");
         sb.Append("<table><tr><th>type</th><th class=\"num\">tokens</th></tr>");
         sb.Append($"<tr><td class=\"hit\">cache read</td><td class=\"num\">{N0(s.Totals.CacheRead)}</td></tr>");
@@ -52,22 +81,55 @@ internal static class StatsHtmlRenderer
         sb.Append($"<tr><td>output</td><td class=\"num\">{N0(s.Totals.Output)}</td></tr>");
         sb.Append("</table>");
 
+        // ── By model ─────────────────────────────────────────────────────────
+        if (s.ByModel.Count > 0)
+        {
+            sb.Append("<h2>By model</h2>");
+            sb.Append("<table><tr><th>model</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">hit %</th><th class=\"num\">avg ms</th><th class=\"num\">cache read</th><th class=\"num\">cache create</th><th class=\"num\">uncached</th><th class=\"num\">output</th><th class=\"num\">cost</th></tr>");
+            foreach (var (model, m) in s.ByModel.OrderBy(x => x.Key))
+            {
+                sb.Append($"<tr><td class=\"mono\">{Esc(model)}</td>")
+                  .Append($"<td class=\"num\">{N0(m.Requests)}</td>")
+                  .Append($"<td class=\"num {(m.Failed > 0 ? "err" : "")}\">{N0(m.Failed)}</td>")
+                  .Append($"<td class=\"num {HitClass(m.HitRatePct)}\">{m.HitRatePct:F0}%</td>")
+                  .Append($"<td class=\"num\">{m.AvgDurationMs:F0}</td>")
+                  .Append($"<td class=\"num\">{N0(m.CacheRead)}</td>")
+                  .Append($"<td class=\"num\">{N0(m.CacheCreation)}</td>")
+                  .Append($"<td class=\"num\">{N0(m.InputUncached)}</td>")
+                  .Append($"<td class=\"num\">{N0(m.Output)}</td>")
+                  .Append($"<td class=\"num cost\">{Money(perModelCost[model])}</td></tr>");
+            }
+            sb.Append("</table>");
+        }
+
+        // ── Hourly ───────────────────────────────────────────────────────────
         if (s.Hourly.Count > 0)
         {
             sb.Append("<h2>Hourly</h2>");
-            sb.Append("<table><tr><th>hour</th><th class=\"num\">requests</th><th class=\"num\">hit %</th><th class=\"num\">cache read</th><th class=\"num\">cache create</th><th class=\"num\">uncached</th><th class=\"num\">output</th></tr>");
+            sb.Append("<table><tr><th>hour</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">hit %</th><th class=\"num\">avg ms</th><th class=\"num\">cache read</th><th class=\"num\">cache create</th><th class=\"num\">uncached</th><th class=\"num\">output</th><th class=\"num\">cost*</th></tr>");
             foreach (var h in s.Hourly)
             {
                 var hourLabel = h.Hour.LocalDateTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+                var hourCost = blended.HasValue
+                    ? (h.InputUncached * blended.Value.Input
+                       + h.CacheRead * blended.Value.CacheHit
+                       + h.CacheCreation5m * blended.Value.CacheWrite5m
+                       + h.CacheCreation1h * blended.Value.CacheWrite1h
+                       + h.Output * blended.Value.Output) / 1_000_000m
+                    : 0m;
                 sb.Append($"<tr><td>{Esc(hourLabel)}</td>")
                   .Append($"<td class=\"num\">{N0(h.Requests)}</td>")
+                  .Append($"<td class=\"num {(h.FailedCount > 0 ? "err" : "")}\">{N0(h.FailedCount)}</td>")
                   .Append($"<td class=\"num {HitClass(h.HitRatePct)}\">{h.HitRatePct:F0}%</td>")
+                  .Append($"<td class=\"num\">{h.AvgDurationMs:F0}</td>")
                   .Append($"<td class=\"num\">{N0(h.CacheRead)}</td>")
                   .Append($"<td class=\"num\">{N0(h.CacheCreation)}</td>")
                   .Append($"<td class=\"num\">{N0(h.InputUncached)}</td>")
-                  .Append($"<td class=\"num\">{N0(h.Output)}</td></tr>");
+                  .Append($"<td class=\"num\">{N0(h.Output)}</td>")
+                  .Append($"<td class=\"num cost\">{Money(hourCost)}</td></tr>");
             }
             sb.Append("</table>");
+            sb.Append("<p class=\"muted\">* hourly cost uses today's by-model token mix as a blended rate; per-hour exact cost would require per-model hourly tracking.</p>");
         }
 
         sb.Append("<footer><a href=\"/stats.json\">raw JSON</a></footer>");
@@ -75,9 +137,54 @@ internal static class StatsHtmlRenderer
         return sb.ToString();
     }
 
+    private static PricingCatalog.RateBlock? ComputeBlendedRates(StatsSnapshot s, PricingCatalog pricing)
+    {
+        // Sum tokens by category across all models, weighted by the model's rates,
+        // then divide by total tokens in that category to get a per-token rate.
+        // Skips models with no pricing entry (their tokens count toward the
+        // denominator-by-category at $0, biasing blended cost downward — fine
+        // since the only such case is `count-tokens` which is metadata-only).
+        long totIn = 0, totRead = 0, tot5m = 0, tot1h = 0, totOut = 0;
+        decimal weightedIn = 0, weightedRead = 0, weighted5m = 0, weighted1h = 0, weightedOut = 0;
+
+        foreach (var (model, m) in s.ByModel)
+        {
+            totIn += m.InputUncached;
+            totRead += m.CacheRead;
+            tot5m += m.CacheCreation5m;
+            tot1h += m.CacheCreation1h;
+            totOut += m.Output;
+
+            if (!pricing.TryGetRates(model, out var r)) continue;
+            weightedIn += m.InputUncached * r.Input;
+            weightedRead += m.CacheRead * r.CacheHit;
+            weighted5m += m.CacheCreation5m * r.CacheWrite5m;
+            weighted1h += m.CacheCreation1h * r.CacheWrite1h;
+            weightedOut += m.Output * r.Output;
+        }
+
+        if (totIn + totRead + tot5m + tot1h + totOut == 0) return null;
+
+        return new PricingCatalog.RateBlock(
+            Input: totIn > 0 ? weightedIn / totIn : 0,
+            Output: totOut > 0 ? weightedOut / totOut : 0,
+            CacheWrite5m: tot5m > 0 ? weighted5m / tot5m : 0,
+            CacheWrite1h: tot1h > 0 ? weighted1h / tot1h : 0,
+            CacheHit: totRead > 0 ? weightedRead / totRead : 0
+        );
+    }
+
     private static string Esc(string? s) => HtmlEncoder.Default.Encode(s ?? "");
     private static string N0(long n) => n.ToString("N0", CultureInfo.InvariantCulture);
     private static string HitClass(double pct) => pct >= 70 ? "hit" : pct >= 30 ? "warn" : "";
+
+    private static string Money(decimal usd)
+    {
+        // Sub-cent precision for tiny costs so they don't all collapse to $0.00.
+        if (usd == 0m) return "$0.00";
+        if (usd < 0.01m) return "$" + usd.ToString("F4", CultureInfo.InvariantCulture);
+        return "$" + usd.ToString("N2", CultureInfo.InvariantCulture);
+    }
 
     private static string FormatUptime(double seconds)
     {

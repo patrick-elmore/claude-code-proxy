@@ -1,0 +1,100 @@
+{
+  "currency": "USD",
+  "unit_per_million_tokens": true,
+  "long_context_threshold_input_tokens": 200000,
+  "notes": [
+    "Prices apply to realtime/streaming requests on Vertex AI. Batch pricing is not included — Claude Code never uses the Batch API.",
+    "When a request's input tokens >= long_context_threshold_input_tokens, all tokens (input, output, cache write, cache hit) for that request are charged at long_context rates.",
+    "Models without a long_context block do not support the 1M context tier on Vertex; cost calculation should treat a >=200K request against such a model as an error."
+  ],
+  "models": {
+    "claude-opus-4-7": {
+      "display_name": "Claude Opus 4.7",
+      "standard": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      },
+      "long_context": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      }
+    },
+    "claude-opus-4-6": {
+      "display_name": "Claude Opus 4.6",
+      "standard": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      },
+      "long_context": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      }
+    },
+    "claude-opus-4-5": {
+      "display_name": "Claude Opus 4.5",
+      "standard": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      }
+    },
+    "claude-sonnet-4-6": {
+      "display_name": "Claude Sonnet 4.6",
+      "standard": {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_write_5m": 3.75,
+        "cache_write_1h": 6.00,
+        "cache_hit": 0.30
+      },
+      "long_context": {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_write_5m": 3.75,
+        "cache_write_1h": 6.00,
+        "cache_hit": 0.30
+      }
+    },
+    "claude-sonnet-4-5": {
+      "display_name": "Claude Sonnet 4.5",
+      "standard": {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_write_5m": 3.75,
+        "cache_write_1h": 6.00,
+        "cache_hit": 0.30
+      },
+      "long_context": {
+        "input": 6.00,
+        "output": 22.50,
+        "cache_write_5m": 7.50,
+        "cache_write_1h": 12.00,
+        "cache_hit": 0.60
+      }
+    },
+    "claude-haiku-4-5": {
+      "display_name": "Claude Haiku 4.5",
+      "standard": {
+        "input": 1.00,
+        "output": 5.00,
+        "cache_write_5m": 1.25,
+        "cache_write_1h": 2.00,
+        "cache_hit": 0.10
+      }
+    }
+  }
+}

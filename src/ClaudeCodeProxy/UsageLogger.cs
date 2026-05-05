@@ -14,11 +14,14 @@ public sealed class UsageLogger(
     IOptionsMonitor<DumpOptions> dumpOpts,
     StatsTracker stats)
 {
-    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, CancellationToken ct)
+    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, CancellationToken ct)
     {
         var current = new RequestStats(
             Guid.NewGuid().ToString("N")[..8],
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        {
+            Model = model,
+        };
 
         var buffer = new byte[8192];
         var decoder = Encoding.UTF8.GetDecoder();
@@ -56,20 +59,23 @@ public sealed class UsageLogger(
             }
         }
 
+        current.DurationMs = (long)(DateTimeOffset.UtcNow - current.Timestamp).TotalMilliseconds;
+
         if (current.HasUsage)
         {
             stats.Record(current);
             var totalInput = current.InputUncached + current.CacheRead + current.CacheCreation;
             var pct = totalInput > 0 ? 100.0 * current.CacheRead / totalInput : 0;
             logger.LogInformation(
-                "[{ReqId}] cache: read={CacheRead} created={CacheCreated} uncached={Uncached} output={Output} ({HitPct:F0}% hit on {TotalIn} input)",
-                current.RequestId, current.CacheRead, current.CacheCreation, current.InputUncached, current.OutputTokens, pct, totalInput);
+                "[{ReqId}] cache: read={CacheRead} created={CacheCreated} uncached={Uncached} output={Output} ({HitPct:F0}% hit on {TotalIn} input) {DurationMs}ms",
+                current.RequestId, current.CacheRead, current.CacheCreation, current.InputUncached, current.OutputTokens, pct, totalInput, current.DurationMs);
         }
         else
         {
+            stats.RecordFailed(current);
             logger.LogInformation(
-                "[{ReqId}] no usage extracted from response (HasUsage=false, response chars={Chars})",
-                current.RequestId, captureForDump?.Length ?? -1);
+                "[{ReqId}] no usage extracted from response (HasUsage=false, response chars={Chars}) {DurationMs}ms",
+                current.RequestId, captureForDump?.Length ?? -1, current.DurationMs);
         }
 
         if (captureForDump is not null)
@@ -109,11 +115,23 @@ public sealed class UsageLogger(
                     var usage = node["message"]?["usage"];
                     if (usage is not null)
                     {
-                        current.InputUncached = (int?)usage["input_tokens"]                ?? 0;
-                        current.CacheRead     = (int?)usage["cache_read_input_tokens"]    ?? 0;
-                        current.CacheCreation = (int?)usage["cache_creation_input_tokens"] ?? 0;
-                        current.OutputTokens  = (int?)usage["output_tokens"] ?? current.OutputTokens;
-                        current.HasUsage      = true;
+                        current.InputUncached = (int?)usage["input_tokens"]             ?? 0;
+                        current.CacheRead     = (int?)usage["cache_read_input_tokens"] ?? 0;
+                        var ccTotal           = (int?)usage["cache_creation_input_tokens"] ?? 0;
+                        var ccBreakdown       = usage["cache_creation"];
+                        if (ccBreakdown is not null)
+                        {
+                            current.CacheCreation5m = (int?)ccBreakdown["ephemeral_5m_input_tokens"] ?? 0;
+                            current.CacheCreation1h = (int?)ccBreakdown["ephemeral_1h_input_tokens"] ?? 0;
+                        }
+                        else
+                        {
+                            // No breakdown present — attribute the total to default 5m TTL.
+                            current.CacheCreation5m = ccTotal;
+                            current.CacheCreation1h = 0;
+                        }
+                        current.OutputTokens = (int?)usage["output_tokens"] ?? current.OutputTokens;
+                        current.HasUsage     = true;
                     }
                 }
                 else if (type == "message_delta")
@@ -137,10 +155,14 @@ public sealed class RequestStats
 {
     public string RequestId { get; }
     public DateTimeOffset Timestamp { get; }
+    public string? Model { get; set; }
     public int InputUncached { get; set; }
     public int CacheRead { get; set; }
-    public int CacheCreation { get; set; }
+    public int CacheCreation5m { get; set; }
+    public int CacheCreation1h { get; set; }
+    public int CacheCreation => CacheCreation5m + CacheCreation1h;
     public int OutputTokens { get; set; }
+    public long DurationMs { get; set; }
     public bool HasUsage { get; set; }
 
     public RequestStats(string requestId, DateTimeOffset timestamp)

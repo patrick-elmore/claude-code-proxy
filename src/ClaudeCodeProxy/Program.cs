@@ -32,6 +32,7 @@ builder.Services.AddHttpClient("vertex", client =>
 
 builder.Services.AddSingleton<PromptRewriter>();
 builder.Services.AddSingleton<RequestDumper>();
+builder.Services.AddSingleton<PricingCatalog>();
 builder.Services.AddSingleton<StatsTracker>();
 builder.Services.AddSingleton<UsageLogger>();
 
@@ -45,7 +46,7 @@ var statsJsonOptions = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     WriteIndented = true,
 };
-app.MapGet("/stats", (StatsTracker st) => Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot()), "text/html; charset=utf-8"));
+app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) => Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing), "text/html; charset=utf-8"));
 app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
 
 // Single catch-all. Mutation is body-shape-driven, not path-driven —
@@ -146,8 +147,21 @@ app.Map("{**path}", async (
 
     // Forward the response stream to the client byte-for-byte while passively
     // tapping SSE events for prompt-cache usage data. Logs one line per request.
+    var model = ExtractModel(requestPath);
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
-    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, ctx.RequestAborted);
+    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, ctx.RequestAborted);
 });
 
 app.Run();
+
+// Extracts the model name from a Vertex path like:
+// /projects/.../models/claude-opus-4-7:streamRawPredict
+static string? ExtractModel(string? path)
+{
+    if (path is null) return null;
+    var idx = path.IndexOf("/models/", StringComparison.Ordinal);
+    if (idx < 0) return null;
+    var start = idx + 8;
+    var end = path.IndexOfAny([':', '?', '/'], start);
+    return end > start ? path[start..end] : path[start..];
+}
