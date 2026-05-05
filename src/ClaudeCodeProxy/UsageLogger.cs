@@ -61,6 +61,11 @@ public sealed class UsageLogger(
 
         current.DurationMs = (long)(DateTimeOffset.UtcNow - current.Timestamp).TotalMilliseconds;
 
+        // Non-streaming responses (:rawPredict) return a complete JSON body rather
+        // than SSE. If the SSE parser found nothing, try the buffer as plain JSON.
+        if (!current.HasUsage && sb.Length > 0)
+            TryParseJsonBody(sb.ToString(), current);
+
         if (current.HasUsage)
         {
             stats.Record(current);
@@ -93,6 +98,50 @@ public sealed class UsageLogger(
             {
                 logger.LogWarning(ex, "[{ReqId}] failed to dump response", current.RequestId);
             }
+        }
+    }
+
+    private static void TryParseJsonBody(string body, RequestStats current)
+    {
+        try
+        {
+            var node = JsonNode.Parse(body.Trim());
+            if (node is null) return;
+
+            // Standard message response — same usage shape as message_start.
+            var usage = node["usage"];
+            if (usage is not null)
+            {
+                current.InputUncached = (int?)usage["input_tokens"]             ?? 0;
+                current.CacheRead     = (int?)usage["cache_read_input_tokens"] ?? 0;
+                var ccTotal           = (int?)usage["cache_creation_input_tokens"] ?? 0;
+                var ccBreakdown       = usage["cache_creation"];
+                if (ccBreakdown is not null)
+                {
+                    current.CacheCreation5m = (int?)ccBreakdown["ephemeral_5m_input_tokens"] ?? 0;
+                    current.CacheCreation1h = (int?)ccBreakdown["ephemeral_1h_input_tokens"] ?? 0;
+                }
+                else
+                {
+                    current.CacheCreation5m = ccTotal;
+                    current.CacheCreation1h = 0;
+                }
+                current.OutputTokens = (int?)usage["output_tokens"] ?? 0;
+                current.HasUsage     = true;
+                return;
+            }
+
+            // count-tokens response: { "input_tokens": N } — no output or cache breakdown.
+            var inputTokens = node["input_tokens"];
+            if (inputTokens is not null)
+            {
+                current.InputUncached = (int?)inputTokens ?? 0;
+                current.HasUsage      = true;
+            }
+        }
+        catch
+        {
+            // Not parseable as JSON — leave HasUsage false.
         }
     }
 

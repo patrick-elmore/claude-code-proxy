@@ -119,6 +119,16 @@ app.Map("{**path}", async (
         return;
     }
 
+    // The .NET Vertex SDK includes /v1/ in its paths; the Node SDK does not.
+    // VertexBaseUrl ends with /v1 to cover the Node SDK case. Strip it when
+    // the incoming path already supplies the version segment so both SDKs route
+    // to the same upstream without a doubled /v1/v1/ prefix.
+    if (requestPath.StartsWith("/v1/", StringComparison.Ordinal)
+        && baseUrl.EndsWith("/v1", StringComparison.Ordinal))
+    {
+        baseUrl = baseUrl[..^3];
+    }
+
     var upstream = new HttpRequestMessage(
         new HttpMethod(ctx.Request.Method),
         baseUrl + requestPath);
