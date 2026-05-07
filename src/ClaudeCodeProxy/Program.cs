@@ -41,6 +41,11 @@ var app = builder.Build();
 // Stats endpoints — must be registered before the catch-all so ASP.NET's
 // specificity-based route matching picks these literal paths over `{**path}`.
 // The `/__` prefix avoids any collision with Vertex paths (which start with /projects/).
+const string FaviconSvg =
+    """<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Claude Code</title><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="#D97757" fill-rule="evenodd"></path></svg>""";
+
+app.MapGet("/favicon.svg", () => Results.Content(FaviconSvg, "image/svg+xml"));
+
 var statsJsonOptions = new JsonSerializerOptions
 {
     PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -71,6 +76,12 @@ app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
     var snapshot = st.GetSnapshotForDate(d);
     return snapshot is null ? Results.NotFound($"No stats for {date}.") : Results.Json(snapshot, statsJsonOptions);
 });
+
+app.MapGet("/stats/week", (StatsTracker st, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days"), "text/html; charset=utf-8"));
+
+app.MapGet("/stats/month", (StatsTracker st, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days"), "text/html; charset=utf-8"));
 
 // Single catch-all. Mutation is body-shape-driven, not path-driven —
 // any request whose body parses as JSON with a `system` array is a
@@ -186,6 +197,20 @@ app.Map("{**path}", async (
 });
 
 app.Run();
+
+// Loads snapshots for the last N calendar days (today included), skipping days with no data
+// except today which always returns the live snapshot.
+static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
+{
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    var list = new List<StatsSnapshot>(days);
+    for (var i = days - 1; i >= 0; i--)
+    {
+        var s = st.GetSnapshotForDate(today.AddDays(-i));
+        if (s is not null) list.Add(s);
+    }
+    return list;
+}
 
 // Returns the adjacent available dates for nav links. Today is always treated
 // as the trailing edge (no future), so next is null when target == today.
