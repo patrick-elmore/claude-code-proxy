@@ -26,10 +26,9 @@ The mutation only touches the static behavioral text in `system[2]` between the 
 
 ### 1. Build and install the service
 
-From an **elevated** PowerShell (Run as Administrator):
+From an **elevated** PowerShell (Run as Administrator), `cd` into your clone of this repo, then:
 
 ```powershell
-cd C:\misc\claude-code-proxy
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
@@ -79,7 +78,7 @@ All configuration lives in `appsettings.json` next to the published binary (`%LO
 | Key | Default | Purpose |
 |---|---|---|
 | `Enabled` | `true` | Master switch for system-prompt rewriting. When `false`, the proxy forwards every request byte-for-byte to the upstream — no JSON parse, no rewriter call, no mutation. The service stays listening; only the mutation step is skipped. Useful for A/B testing the prompt against the default Claude Code behavior without uninstalling the service. |
-| `PromptFilePath` | `C:/misc/claude-code-proxy/prompts/default.md` | Absolute path to the file containing your custom system prompt. If empty or missing, the proxy passes requests through unmodified (no mutation, but still parses/reserializes — for true byte-for-byte passthrough use `Enabled: false`). |
+| `PromptFilePath` | `prompts/default.md` | Path to the file containing your custom system prompt (relative to the binary location, or absolute). `install.ps1` rewrites this to the absolute path of the in-repo `prompts/default.md` on first install. If empty or the file is missing, the proxy passes requests through unmodified (no mutation, but still parses/reserializes — for true byte-for-byte passthrough use `Enabled: false`). |
 | `VertexBaseUrl` | `https://aiplatform.googleapis.com/v1` | Upstream Vertex endpoint, including the `/v1` segment. Use the global host (no region prefix) when working with `locations/global`; use `https://{region}-aiplatform.googleapis.com/v1` for regional endpoints. |
 | `Variables` | `{}` | Optional dictionary of `{{key}}` → value substitutions applied to the prompt file at request time. Reserved for future use. |
 
@@ -89,7 +88,7 @@ All configuration lives in `appsettings.json` next to the published binary (`%LO
 |---|---|---|
 | `Enabled` | `false` | When true, captures the inbound request body before and after mutation. Auto-disables after `MaxRequests` reached. |
 | `MaxRequests` | `5` | Number of original requests to capture before auto-disabling. |
-| `OutputPath` | `C:/misc/claude-code-proxy/dumps` | Directory for dump files. **Use a Windows-style path** — the service runs as a Windows process and misinterprets WSL-style `/mnt/c/...` paths as `C:\mnt\c\...`. |
+| `OutputPath` | `<set-to-a-writable-directory>` | Directory for dump files. The default in source is a placeholder so dumps don't accidentally land in the working tree — `install.ps1` rewrites this to `%LOCALAPPDATA%\ClaudeCodeProxy\dumps` on first install. When running outside the installed service, set this explicitly before enabling `Dump:Enabled`. **Use a Windows-style path** — the service runs as a Windows process and misinterprets WSL-style `/mnt/c/...` paths as `C:\mnt\c\...`. |
 
 ### `Serilog` section
 
@@ -144,7 +143,7 @@ When you want to inspect what's actually on the wire, enable dump mode:
 "Dump": {
   "Enabled": true,
   "MaxRequests": 5,
-  "OutputPath": "C:/misc/claude-code-proxy/dumps"
+  "OutputPath": "C:/path/to/dumps"
 }
 ```
 

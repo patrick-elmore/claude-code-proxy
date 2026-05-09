@@ -43,6 +43,15 @@ public sealed class RequestDumper(IOptionsMonitor<DumpOptions> options, ILogger<
             Interlocked.Increment(ref _count);
         }
 
+        if (string.IsNullOrWhiteSpace(opts.OutputPath) || opts.OutputPath.Contains('<'))
+        {
+            logger.LogWarning(
+                "Dump:Enabled is true but Dump:OutputPath is unset or still the placeholder ({Path}). " +
+                "Set it to a writable directory in appsettings.json before enabling dumps.",
+                opts.OutputPath);
+            return;
+        }
+
         try
         {
             Directory.CreateDirectory(opts.OutputPath);

@@ -39,10 +39,15 @@ public sealed class DumpOptions
 
     /// <summary>
     /// Output directory for dumps. Use a Windows-style path
-    /// (e.g. "C:/misc/claude-code-proxy/dumps") since the proxy
+    /// (e.g. "C:/path/to/dumps") since the proxy
     /// runs as a Windows process — WSL paths get misinterpreted.
+    /// Default is a placeholder so dumps don't accidentally land in
+    /// the working tree. install.ps1 rewrites this to
+    /// %LOCALAPPDATA%/ClaudeCodeProxy/dumps on first install. When
+    /// running outside the installed service, set this explicitly
+    /// before enabling Dump:Enabled.
     /// </summary>
-    public string OutputPath { get; set; } = "./dumps";
+    public string OutputPath { get; set; } = "<set-to-a-writable-directory>";
 }
 
 public sealed class StatsOptions
