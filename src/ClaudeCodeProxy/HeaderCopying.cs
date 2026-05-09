@@ -8,9 +8,7 @@ public static class HeaderCopying
         "Trailers", "Upgrade", "Proxy-Authorization", "Proxy-Authenticate"
     };
 
-    // Headers managed by StringContent or HttpClient itself — skip on request copy.
-    // Accept-Encoding is stripped so Vertex returns plain-text SSE, letting the
-    // UsageLogger tap parse message_start events without decompressing.
+    // First three are HttpClient-managed; Accept-Encoding stripped so Vertex returns plain-text SSE.
     private static readonly HashSet<string> RequestSkip = new(StringComparer.OrdinalIgnoreCase)
     {
         "Host", "Content-Type", "Content-Length", "Accept-Encoding"

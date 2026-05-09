@@ -103,10 +103,7 @@ public sealed class StatsTracker
         }
     }
 
-    /// <summary>
-    /// Returns the live in-memory snapshot for today, or a snapshot loaded from disk
-    /// for any historical date. Returns null if no file exists for the requested date.
-    /// </summary>
+    // Returns null when no stats file exists for the date.
     public StatsSnapshot? GetSnapshotForDate(DateOnly date)
     {
         lock (_lock)
@@ -181,7 +178,6 @@ public sealed class StatsTracker
         }
     }
 
-    /// <summary>Returns all dates for which a stats file exists, in ascending order.</summary>
     public IReadOnlyList<DateOnly> GetAvailableDates()
     {
         var dates = new List<DateOnly>();
@@ -305,9 +301,7 @@ public sealed class StatsTracker
             var node = JsonNode.Parse(File.ReadAllText(path));
             if (node is not JsonObject root) return;
 
-            // Migrate legacy schema: pre-2026-05-04 files used a single `cache_creation`
-            // total instead of the 5m / 1h split. Attribute legacy totals to 5m
-            // (the default TTL) so they survive the upgrade.
+            // Legacy files pre-2026-05-04 used a single cache_creation total; attribute it to 5m (default TTL).
             MigrateCacheCreationKey(root["totals"] as JsonObject);
             if (root["by_model"] is JsonObject byModel)
                 foreach (var prop in byModel)
@@ -360,9 +354,8 @@ public sealed class StatsTracker
     private static void MigrateCacheCreationKey(JsonObject? obj)
     {
         if (obj is null) return;
-        // Note: snake_case naming policy does NOT insert an underscore between
-        // letters and digits, so CacheCreation5m serializes as `cache_creation5m`.
-        if (obj["cache_creation5m"] is not null) return; // already new schema
+        // SnakeCaseLower doesn't insert _ between letters and digits: CacheCreation5m → cache_creation5m.
+        if (obj["cache_creation5m"] is not null) return;
 
         if (obj["cache_creation"] is { } legacy)
         {
@@ -396,8 +389,6 @@ public sealed class StatsTracker
 
     private static DateTimeOffset TruncateToHour(DateTimeOffset dt) =>
         new(dt.Year, dt.Month, dt.Day, dt.Hour, 0, 0, dt.Offset);
-
-    // ── File persistence models ───────────────────────────────────────────────
 
     private sealed record FileSnapshot(
         string Date,
@@ -446,8 +437,6 @@ public sealed class StatsTracker
         public long TotalDurationMs { get; set; }
     }
 }
-
-// ── Public snapshot types ─────────────────────────────────────────────────────
 
 public sealed record StatsSnapshot(
     string Date,

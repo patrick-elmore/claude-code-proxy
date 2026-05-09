@@ -2,16 +2,7 @@ using System.Text.Json;
 
 namespace ClaudeCodeProxy;
 
-/// <summary>
-/// Loads <c>pricing.json</c> from the app base directory once at startup and exposes
-/// per-model rate lookup + cost calculation. Vertex paths sometimes carry an
-/// <c>@version</c> suffix on the model name; lookup strips that before matching.
-///
-/// Only the standard tier is applied — the proxy doesn't track per-request input totals,
-/// so it can't tell which requests crossed the 200K long-context threshold. For the
-/// dominant model (Opus 4.7) the long-context rate is identical, so this is exact.
-/// For Sonnet 4.5 it would undercount cost on >=200K requests.
-/// </summary>
+// Standard tier only — the 200K long-context threshold can't be detected without per-request input tracking.
 public sealed class PricingCatalog
 {
     private readonly Dictionary<string, RateBlock> _standardRates;

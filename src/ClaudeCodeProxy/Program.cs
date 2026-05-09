@@ -38,9 +38,7 @@ builder.Services.AddSingleton<UsageLogger>();
 
 var app = builder.Build();
 
-// Stats endpoints — must be registered before the catch-all so ASP.NET's
-// specificity-based route matching picks these literal paths over `{**path}`.
-// The `/__` prefix avoids any collision with Vertex paths (which start with /projects/).
+// Must precede the catch-all — ASP.NET route matching won't prioritize literal paths over {**path} otherwise.
 const string FaviconSvg =
     """<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Claude Code</title><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="#D97757" fill-rule="evenodd"></path></svg>""";
 
@@ -83,9 +81,7 @@ app.MapGet("/stats/week", (StatsTracker st, PricingCatalog pricing) =>
 app.MapGet("/stats/month", (StatsTracker st, PricingCatalog pricing) =>
     Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days"), "text/html; charset=utf-8"));
 
-// Single catch-all. Mutation is body-shape-driven, not path-driven —
-// any request whose body parses as JSON with a `system` array is a
-// mutation candidate. Everything else is forwarded verbatim.
+// Mutation is body-shape-driven, not path-driven — any JSON body with a system[] is a candidate.
 app.Map("{**path}", async (
     HttpContext ctx,
     IHttpClientFactory httpClientFactory,
@@ -105,22 +101,20 @@ app.Map("{**path}", async (
 
     if (hasBody)
     {
-        // Buffer the body so we can both inspect/mutate and forward.
         using var ms = new MemoryStream();
         await ctx.Request.Body.CopyToAsync(ms, ctx.RequestAborted);
         var originalBytes = ms.ToArray();
 
         if (!proxyOpts.CurrentValue.Enabled)
         {
-            // Disabled mode: forward bytes verbatim. Still dump if requested
-            // (lets you inspect raw traffic without mutation interfering).
+            // Dump even when disabled — lets you compare raw vs mutated traffic.
             await dumper.DumpAsync("original", null, originalBytes, requestPath, ctx.RequestAborted);
             forwardBytes = originalBytes;
         }
         else
         {
             try { node = JsonNode.Parse(originalBytes); }
-            catch (JsonException) { /* not JSON — leave node null, forward as bytes */ }
+            catch (JsonException) { /* not JSON — forward verbatim */ }
 
             await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
 
@@ -153,10 +147,7 @@ app.Map("{**path}", async (
         return;
     }
 
-    // The .NET Vertex SDK includes /v1/ in its paths; the Node SDK does not.
-    // VertexBaseUrl ends with /v1 to cover the Node SDK case. Strip it when
-    // the incoming path already supplies the version segment so both SDKs route
-    // to the same upstream without a doubled /v1/v1/ prefix.
+    // .NET Vertex SDK paths include /v1; Node SDK doesn't. Strip from baseUrl when path already has it.
     if (requestPath.StartsWith("/v1/", StringComparison.Ordinal)
         && baseUrl.EndsWith("/v1", StringComparison.Ordinal))
     {
@@ -183,14 +174,10 @@ app.Map("{**path}", async (
     ctx.Response.StatusCode = (int)response.StatusCode;
     HeaderCopying.CopyResponseHeaders(response, ctx.Response);
 
-    // Baseline visibility: one log line per request regardless of whether the
-    // response is SSE. UsageLogger only emits when it parses a message_start;
-    // this gives us proof-of-life for every forwarded request.
+    // UsageLogger only logs when it parses usage; this guarantees one log line per request.
     log.LogInformation("{Method} {Path} -> {Status}",
         ctx.Request.Method, requestPath, (int)response.StatusCode);
 
-    // Forward the response stream to the client byte-for-byte while passively
-    // tapping SSE events for prompt-cache usage data. Logs one line per request.
     var model = ExtractModel(requestPath);
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
     await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, ctx.RequestAborted);
@@ -198,8 +185,6 @@ app.Map("{**path}", async (
 
 app.Run();
 
-// Loads snapshots for the last N calendar days (today included), skipping days with no data
-// except today which always returns the live snapshot.
 static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
 {
     var today = DateOnly.FromDateTime(DateTime.Now);
@@ -212,8 +197,7 @@ static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
     return list;
 }
 
-// Returns the adjacent available dates for nav links. Today is always treated
-// as the trailing edge (no future), so next is null when target == today.
+// Today is always the trailing edge — next is null even when target == today.
 static (DateOnly? prev, DateOnly? next) AdjacentDates(StatsTracker st, DateOnly target)
 {
     var all = st.GetAvailableDates();
@@ -226,8 +210,6 @@ static (DateOnly? prev, DateOnly? next) AdjacentDates(StatsTracker st, DateOnly 
     return (prev, next);
 }
 
-// Extracts the model name from a Vertex path like:
-// /projects/.../models/claude-opus-4-7:streamRawPredict
 static string? ExtractModel(string? path)
 {
     if (path is null) return null;

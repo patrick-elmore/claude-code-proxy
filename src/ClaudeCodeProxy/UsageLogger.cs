@@ -4,11 +4,6 @@ using Microsoft.Extensions.Options;
 
 namespace ClaudeCodeProxy;
 
-/// <summary>
-/// Forwards the upstream response stream to the downstream client byte-for-byte
-/// while passively parsing SSE message_start / message_delta events to extract
-/// prompt-cache usage data. Delegates stats recording to <see cref="StatsTracker"/>.
-/// </summary>
 public sealed class UsageLogger(
     ILogger<UsageLogger> logger,
     IOptionsMonitor<DumpOptions> dumpOpts,
@@ -61,8 +56,7 @@ public sealed class UsageLogger(
 
         current.DurationMs = (long)(DateTimeOffset.UtcNow - current.Timestamp).TotalMilliseconds;
 
-        // Non-streaming responses (:rawPredict) return a complete JSON body rather
-        // than SSE. If the SSE parser found nothing, try the buffer as plain JSON.
+        // rawPredict returns plain JSON rather than SSE; fall back when no SSE events were found.
         if (!current.HasUsage && sb.Length > 0)
             TryParseJsonBody(sb.ToString(), current);
 
@@ -108,7 +102,6 @@ public sealed class UsageLogger(
             var node = JsonNode.Parse(body.Trim());
             if (node is null) return;
 
-            // Standard message response — same usage shape as message_start.
             var usage = node["usage"];
             if (usage is not null)
             {

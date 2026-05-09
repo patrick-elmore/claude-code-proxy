@@ -11,7 +11,6 @@ internal static class StatsHtmlRenderer
     {
         var totalIn = s.Totals.InputUncached + s.Totals.CacheRead + s.Totals.CacheCreation;
 
-        // ── Per-model cost (exact) and day total ──────────────────────────────
         var perModelCost = new Dictionary<string, decimal>(s.ByModel.Count);
         decimal dayTotalCost = 0m;
         foreach (var (model, m) in s.ByModel)
@@ -21,11 +20,7 @@ internal static class StatsHtmlRenderer
             dayTotalCost += cost;
         }
 
-        // ── Blended per-token rates from today's by_model mix ─────────────────
-        // Hourly buckets don't carry per-model breakdown, so per-hour cost is
-        // computed by applying a token-share-weighted blended rate from today's
-        // by_model totals. Approximate (an hour skewed toward one model is mis-
-        // attributed at the daily mix) but reasonable for at-a-glance use.
+        // Hourly buckets don't carry per-model data, so per-hour cost uses a blended rate from today's by-model mix.
         var blended = ComputeBlendedRates(s, pricing);
 
         var sb = new StringBuilder(8192);
@@ -65,7 +60,6 @@ internal static class StatsHtmlRenderer
 
         sb.Append("<h1>Claude Code Proxy</h1>");
 
-        // Date navigation
         var isHistorical = s.UptimeSeconds < 0;
         var uptimePart = isHistorical ? "historical" : $"uptime: {Esc(FormatUptime(s.UptimeSeconds))}";
         sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; {uptimePart}</p>");
@@ -80,7 +74,6 @@ internal static class StatsHtmlRenderer
             sb.Append($"<span class=\"sep\">|</span><a href=\"/stats/{nextDate.Value:yyyy-MM-dd}\">{nextDate.Value:yyyy-MM-dd} &#8594;</a>");
         sb.Append("</nav>");
 
-        // ── Today ────────────────────────────────────────────────────────────
         sb.Append("<h2>Today</h2>");
 
         var failedSuffix = s.FailedCount > 0
@@ -91,7 +84,6 @@ internal static class StatsHtmlRenderer
         sb.Append($"<div class=\"pair\"><span class=\"k\">avg latency</span><span class=\"v\">{s.AvgDurationMs:F0} ms</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">total cost</span><span class=\"v cost\">{Money(dayTotalCost)}</span></div>");
 
-        // ── Token totals ─────────────────────────────────────────────────────
         sb.Append("<h2>Token totals</h2>");
         sb.Append("<table><tr><th>type</th><th class=\"num\">tokens</th></tr>");
         sb.Append($"<tr><td class=\"hit\">cache read</td><td class=\"num\">{N0(s.Totals.CacheRead)}</td></tr>");
@@ -100,7 +92,6 @@ internal static class StatsHtmlRenderer
         sb.Append($"<tr><td>output</td><td class=\"num\">{N0(s.Totals.Output)}</td></tr>");
         sb.Append("</table>");
 
-        // ── By model ─────────────────────────────────────────────────────────
         if (s.ByModel.Count > 0)
         {
             sb.Append("<h2>By model</h2>");
@@ -121,7 +112,6 @@ internal static class StatsHtmlRenderer
             sb.Append("</table>");
         }
 
-        // ── Hourly ───────────────────────────────────────────────────────────
         if (s.Hourly.Count > 0)
         {
             sb.Append("<h2>Hourly</h2>");
@@ -160,7 +150,6 @@ internal static class StatsHtmlRenderer
     {
         var sb = new StringBuilder(8192);
 
-        // ── Aggregate totals across all days ─────────────────────────────────
         long totalRequests = 0, totalFailed = 0;
         long totalUncached = 0, totalRead = 0, totalCc5m = 0, totalCc1h = 0, totalOutput = 0;
         var mergedModels = new Dictionary<string, (long req, long failed, long uncached, long read, long cc5m, long cc1h, long output)>();
@@ -235,7 +224,6 @@ internal static class StatsHtmlRenderer
         sb.Append("<a href=\"/stats/month\">Month</a>");
         sb.Append("</nav>");
 
-        // ── Aggregate summary ─────────────────────────────────────────────────
         sb.Append("<h2>Totals</h2>");
         var failedSuffix = totalFailed > 0 ? $" <span class=\"muted err\">({N0(totalFailed)} failed)</span>" : "";
         sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(totalRequests)}</span>{failedSuffix}</div>");
@@ -248,7 +236,6 @@ internal static class StatsHtmlRenderer
         sb.Append($"<tr><td>output</td><td class=\"num\">{N0(totalOutput)}</td></tr>");
         sb.Append("</table>");
 
-        // ── Day-by-day ────────────────────────────────────────────────────────
         if (snapshots.Count > 0)
         {
             sb.Append("<h2>By day</h2>");
@@ -272,7 +259,6 @@ internal static class StatsHtmlRenderer
             sb.Append("</table>");
         }
 
-        // ── By model (merged) ─────────────────────────────────────────────────
         if (mergedModels.Count > 0)
         {
             sb.Append("<h2>By model</h2>");
@@ -303,11 +289,7 @@ internal static class StatsHtmlRenderer
 
     private static PricingCatalog.RateBlock? ComputeBlendedRates(StatsSnapshot s, PricingCatalog pricing)
     {
-        // Sum tokens by category across all models, weighted by the model's rates,
-        // then divide by total tokens in that category to get a per-token rate.
-        // Skips models with no pricing entry (their tokens count toward the
-        // denominator-by-category at $0, biasing blended cost downward — fine
-        // since the only such case is `count-tokens` which is metadata-only).
+        // Models without pricing entries bias blended cost downward; acceptable since only count-tokens lacks pricing.
         long totIn = 0, totRead = 0, tot5m = 0, tot1h = 0, totOut = 0;
         decimal weightedIn = 0, weightedRead = 0, weighted5m = 0, weighted1h = 0, weightedOut = 0;
 

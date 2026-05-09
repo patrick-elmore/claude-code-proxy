@@ -4,26 +4,13 @@ using Microsoft.Extensions.Options;
 
 namespace ClaudeCodeProxy;
 
-/// <summary>
-/// Writes inbound request bodies (and the post-mutation body when applicable)
-/// to disk for debugging. Auto-disables after Dump:MaxRequests requests.
-///
-/// File naming:
-/// - {timestamp}-original.json   — body as received (pretty JSON if parsed, raw bytes otherwise)
-/// - {timestamp}-mutated.json    — body after PromptRewriter, only when mutation happened
-/// - {timestamp}-path.txt        — request path + query, written once per request
-/// </summary>
+// Dumps: {ts}-original.json, {ts}-mutated.json (when mutated), {ts}-path.txt.
 public sealed class RequestDumper(IOptionsMonitor<DumpOptions> options, ILogger<RequestDumper> logger)
 {
     private int _count;
     private static readonly JsonSerializerOptions Pretty = new() { WriteIndented = true };
 
-    /// <summary>
-    /// Writes a labeled dump.
-    /// Pass `node` for JSON content (pretty-printed), `rawBytes` for raw fallback,
-    /// or both (node wins). `requestPath` is written as a sidecar file when set —
-    /// only the "original" call should pass it to avoid duplicate path files.
-    /// </summary>
+    // Only the "original" call should pass requestPath to avoid duplicate sidecar files.
     public async Task DumpAsync(
         string label,
         JsonNode? node,
@@ -34,9 +21,7 @@ public sealed class RequestDumper(IOptionsMonitor<DumpOptions> options, ILogger<
         var opts = options.CurrentValue;
         if (!opts.Enabled) return;
 
-        // Cap is on requests, not files. "original" counts; "mutated" rides
-        // along with whichever original it was paired with — if the original
-        // was within budget, its mutated counterpart is too.
+        // "original" counts against MaxRequests; "mutated" always accompanies its original.
         if (label == "original")
         {
             if (_count >= opts.MaxRequests) return;

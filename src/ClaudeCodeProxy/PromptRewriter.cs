@@ -3,26 +3,10 @@ using Microsoft.Extensions.Options;
 
 namespace ClaudeCodeProxy;
 
-/// <summary>
-/// Mutates Claude Code's system prompt by replacing the static behavioral
-/// portion of the bulk block while preserving the attribution header,
-/// the identity-prefix block, and the dynamic content (env, memory, gitStatus).
-///
-/// Block identification is by content (not position):
-/// - Attribution header: text starts with "x-anthropic-billing-header"
-/// - Identity prefix: text exact-matches one of the three known CLI prefixes
-/// - Bulk: the longest remaining block
-///
-/// Within the bulk block, the static-to-dynamic boundary is found by
-/// searching for known section markers in priority order (Session-specific
-/// guidance first, then auto memory, then Environment).
-///
-/// Any unmet condition results in a no-op (returns false). Caller forwards
-/// the original body unchanged.
-/// </summary>
+// Block identification is by content, not position. Any unmet condition is a no-op.
 public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogger<PromptRewriter> logger)
 {
-    // From leaked Claude Code source: src/constants/system.ts:10-12
+    // From the Claude Code CLI source: src/constants/system.ts:10-12.
     private static readonly HashSet<string> KnownIdentityPrefixes = new(StringComparer.Ordinal)
     {
         "You are Claude Code, Anthropic's official CLI for Claude.",
@@ -30,9 +14,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
     };
 
-    // Priority-ordered markers. The first one found in the bulk text is the
-    // static-to-dynamic boundary. Each is preceded by a newline to avoid
-    // false matches on header text mentioned inside other sections.
+    // Each marker is newline-prefixed to avoid false matches where these heading names appear in prose.
     private static readonly string[] DynamicBoundaryMarkers =
     {
         "\n# Session-specific guidance\n",
@@ -42,9 +24,6 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
 
     private const string AttributionPrefix = "x-anthropic-billing-header";
 
-    /// <summary>
-    /// Returns true if the body was mutated, false if it was passed through unchanged.
-    /// </summary>
     public async Task<bool> RewriteAsync(JsonNode? root)
     {
         if (root is not JsonObject body) return false;
