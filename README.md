@@ -90,6 +90,12 @@ All configuration lives in `appsettings.json` next to the published binary (`%LO
 | `MaxRequests` | `5` | Number of original requests to capture before auto-disabling. |
 | `OutputPath` | `<set-to-a-writable-directory>` | Directory for dump files. The default in source is a placeholder so dumps don't accidentally land in the working tree — `install.ps1` rewrites this to `%LOCALAPPDATA%\ClaudeCodeProxy\dumps` on first install. When running outside the installed service, set this explicitly before enabling `Dump:Enabled`. **Use a Windows-style path** — the service runs as a Windows process and misinterprets WSL-style `/mnt/c/...` paths as `C:\mnt\c\...`. |
 
+### `Stats` section
+
+| Key | Default | Purpose |
+|---|---|---|
+| `OutputPath` | `./stats` | Directory where daily stats files are written. `install.ps1` creates this under `%LOCALAPPDATA%\ClaudeCodeProxy\stats\`. |
+
 ### `Serilog` section
 
 Standard Serilog configuration. By default, logs go to `./logs/proxy_YYYYMMDD.log` (relative to the binary location) at Information level.
@@ -102,7 +108,7 @@ Restart-Service ClaudeCodeProxy
 
 ## Customizing the system prompt
 
-The default prompt at `prompts/default.md` is tuned for software engineering, technical writing, and blog writing. To customize:
+The default prompt at `prompts/default.md` is a working example covering engineering approach, tool-use rules, and communication style — the same shape as Claude Code's original. To customize:
 
 1. Edit `prompts/default.md` directly, or
 2. Create a new file (anywhere) and point `Proxy:PromptFilePath` at it in `appsettings.json`.
@@ -154,6 +160,23 @@ Restart the service. The next 5 requests will write three files each to the dump
 - `{timestamp}-path.txt` — the request path including query string
 
 After 5 requests, dumping auto-disables to avoid filling disk. Re-enabling requires another `appsettings.json` edit + restart.
+
+## Stats dashboard
+
+The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
+
+| Endpoint | Description |
+|---|---|
+| `/stats` | Today's live view |
+| `/stats/{date}` | Historical view for a specific date (`yyyy-MM-dd`) |
+| `/stats/week` | Last 7 days aggregate |
+| `/stats/month` | Last 30 days aggregate |
+| `/stats.json` | Today's data as raw JSON |
+| `/stats/{date}.json` | Historical data as raw JSON |
+
+Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown, and hourly activity.
+
+Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. Cost estimates use the standard Vertex AI tier — see `src/ClaudeCodeProxy/pricing.json` for the rate catalog.
 
 ## Service management
 
@@ -224,6 +247,7 @@ The bullet in the default prompt scopes off-machine actions to "on your own init
 ```
 claude-code-proxy/
 ├── README.md                  # this file
+├── LICENSE
 ├── install.ps1                # first-time service install (admin-required)
 ├── update.ps1                 # rebuild + redeploy, preserve config (admin-required)
 ├── uninstall.ps1              # stop + remove service (admin-required)
@@ -232,11 +256,16 @@ claude-code-proxy/
 │   └── default.md             # the active replacement prompt (edit here)
 └── src/ClaudeCodeProxy/
     ├── ClaudeCodeProxy.csproj
-    ├── Program.cs             # service host + single catch-all route
-    ├── PromptRewriter.cs      # block-level mutation
+    ├── Program.cs             # service host, routes, catch-all proxy handler
+    ├── PromptRewriter.cs      # block-level system-prompt mutation
     ├── HeaderCopying.cs       # hop-by-hop header filter
-    ├── Options.cs             # ProxyOptions + DumpOptions
+    ├── Options.cs             # ProxyOptions, DumpOptions, StatsOptions
     ├── RequestDumper.cs       # debug dump
+    ├── UsageLogger.cs         # SSE tap and usage extraction
+    ├── StatsTracker.cs        # per-day stats accumulation and persistence
+    ├── StatsHtmlRenderer.cs   # stats dashboard HTML
+    ├── PricingCatalog.cs      # Vertex AI rate lookup and cost calculation
+    ├── pricing.json           # rate catalog (standard tier, per model)
     ├── appsettings.json       # source-repo defaults (install.ps1 rewrites paths)
     └── appsettings.Development.json
 
@@ -244,6 +273,7 @@ claude-code-proxy/
 %LOCALAPPDATA%\ClaudeCodeProxy\
 ├── ClaudeCodeProxy.exe        # service binary
 ├── appsettings.json           # active config (preserved across updates)
-├── logs\                      # Serilog file output
-└── dumps\                     # debug dumps when Dump:Enabled = true
+├── logs\                      # Serilog output
+├── dumps\                     # debug dumps when Dump:Enabled = true
+└── stats\                     # daily stats JSON files
 ```
