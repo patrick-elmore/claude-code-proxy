@@ -17,3 +17,13 @@ publish/
 logs/
 dumps/
 stats/
+
+# Secrets safety net — never commit credentials, keys, or tokens.
+.auth/
+*.env
+*.pem
+*.key
+*.pfx
+*.p12
+credentials*
+secrets*
