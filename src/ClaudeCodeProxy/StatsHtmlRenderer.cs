@@ -54,15 +54,22 @@ internal static class StatsHtmlRenderer
             footer { margin-top: 2rem; font-size: .85rem; color: #777; }
             footer a { color: #9ab; text-decoration: none; }
             footer a:hover { text-decoration: underline; }
+            .page-header { display: flex; align-items: center; gap: 1.5rem; }
+            .page-header-text { flex: 1; min-width: 0; }
+            .page-header-text > p { margin-top: .15rem; }
+            .page-header-icon { flex-shrink: 0; }
+            .page-header-icon svg { display: block; height: 3.5rem; width: auto; }
             </style>
             </head><body>
             """);
 
+        sb.Append("<div class=\"page-header\"><div class=\"page-header-text\">");
         sb.Append("<h1>Claude Code Proxy</h1>");
 
         var isHistorical = s.UptimeSeconds < 0;
         var uptimePart = isHistorical ? "historical" : $"uptime: {Esc(FormatUptime(s.UptimeSeconds))}";
         sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; {uptimePart}</p>");
+        sb.Append("</div><div class=\"page-header-icon\">").Append(HeaderIconSvg).Append("</div></div>");
         sb.Append("<nav>");
         if (prevDate.HasValue)
             sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a><span class=\"sep\">|</span>");
@@ -212,12 +219,19 @@ internal static class StatsHtmlRenderer
             footer { margin-top: 2rem; font-size: .85rem; color: #777; }
             footer a { color: #9ab; text-decoration: none; }
             footer a:hover { text-decoration: underline; }
+            .page-header { display: flex; align-items: center; gap: 1.5rem; }
+            .page-header-text { flex: 1; min-width: 0; }
+            .page-header-text > p { margin-top: .15rem; }
+            .page-header-icon { flex-shrink: 0; }
+            .page-header-icon svg { display: block; height: 3.5rem; width: auto; }
             </style>
             </head><body>
             """);
 
+        sb.Append("<div class=\"page-header\"><div class=\"page-header-text\">");
         sb.Append("<h1>Claude Code Proxy</h1>");
         sb.Append($"<p class=\"muted\">{Esc(title)} &middot; {snapshots.Count} day{(snapshots.Count == 1 ? "" : "s")} of data</p>");
+        sb.Append("</div><div class=\"page-header-icon\">").Append(HeaderIconSvg).Append("</div></div>");
         sb.Append("<nav>");
         sb.Append("<a href=\"/stats\">Today</a><span class=\"sep\">|</span>");
         sb.Append("<a href=\"/stats/week\">Week</a><span class=\"sep\">|</span>");
@@ -340,4 +354,8 @@ internal static class StatsHtmlRenderer
         if (ts.TotalMinutes >= 1) return $"{(int)ts.TotalMinutes}m {ts.Seconds}s";
         return $"{(int)ts.TotalSeconds}s";
     }
+
+    // Claude logo (24x24 path) at translate(15,3); content x∈[15,39] y∈[8,23]; arrows x∈[0,54]; viewBox adds stroke-width/2 padding
+    private const string HeaderIconSvg =
+        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 7 56 17" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="0" y1="15" x2="10" y2="15" stroke="#D97757"/><polyline points="7,12 10,15 7,18" stroke="#D97757"/><g transform="translate(15,3)"><path clip-rule="evenodd" fill-rule="evenodd" fill="#D97757" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"/></g><line x1="44" y1="15" x2="54" y2="15" stroke="#D97757"/><polyline points="51,12 54,15 51,18" stroke="#D97757"/></svg>""";
 }

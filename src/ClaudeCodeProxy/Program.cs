@@ -38,11 +38,10 @@ builder.Services.AddSingleton<UsageLogger>();
 
 var app = builder.Build();
 
-// Must precede the catch-all — ASP.NET route matching won't prioritize literal paths over {**path} otherwise.
-const string FaviconSvg =
-    """<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><title>Claude Code</title><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="#D97757" fill-rule="evenodd"></path></svg>""";
-
-app.MapGet("/favicon.svg", () => Results.Content(FaviconSvg, "image/svg+xml"));
+// Read favicon from wwwroot/favicon.svg once at startup; serve explicitly to avoid static-file MIME/path issues.
+var faviconPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "favicon.svg");
+var faviconSvg = File.ReadAllText(faviconPath);
+app.MapGet("/favicon.svg", () => Results.Content(faviconSvg, "image/svg+xml"));
 
 var statsJsonOptions = new JsonSerializerOptions
 {

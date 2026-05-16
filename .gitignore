@@ -1,4 +1,5 @@
 .context/
+CLAUDE.md
 .claude/*
 !.claude/agents/
 !.claude/skills/
