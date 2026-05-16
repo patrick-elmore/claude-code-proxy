@@ -123,7 +123,12 @@ app.Map("{**path}", async (
             if (node is not null)
             {
                 RewriteOutcome outcome;
-                try
+                // Explicit bypass from direct SDK callers (e.g. second-brain) that set this header.
+                if (ctx.Request.Headers.ContainsKey("X-CC-Proxy-Bypass"))
+                {
+                    outcome = RewriteOutcome.NotApplicable;
+                }
+                else try
                 {
                     outcome = await rewriter.RewriteAsync(node);
                 }
