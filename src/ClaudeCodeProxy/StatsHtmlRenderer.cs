@@ -59,7 +59,9 @@ internal static class StatsHtmlRenderer
             .page-header-text > p { margin-top: .15rem; }
             .page-header-icon { flex-shrink: 0; }
             .page-header-icon svg { display: block; height: 3.5rem; width: auto; }
-            .failure-warn { background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
+            .failure-warn { display: flex; align-items: center; gap: 1rem; background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
+            .failure-warn > span { flex: 1; min-width: 0; }
+            .dismiss-btn { flex-shrink: 0; background: #3a3a3a; border: 1px solid #555; color: #ccc; border-radius: 3px; padding: .15rem .6rem; font-size: .82rem; cursor: pointer; white-space: nowrap; }
             </style>
             </head><body>
             """);
@@ -227,7 +229,9 @@ internal static class StatsHtmlRenderer
             .page-header-text > p { margin-top: .15rem; }
             .page-header-icon { flex-shrink: 0; }
             .page-header-icon svg { display: block; height: 3.5rem; width: auto; }
-            .failure-warn { background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
+            .failure-warn { display: flex; align-items: center; gap: 1rem; background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
+            .failure-warn > span { flex: 1; min-width: 0; }
+            .dismiss-btn { flex-shrink: 0; background: #3a3a3a; border: 1px solid #555; color: #ccc; border-radius: 3px; padding: .15rem .6rem; font-size: .82rem; cursor: pointer; white-space: nowrap; }
             </style>
             </head><body>
             """);
@@ -387,8 +391,8 @@ internal static class StatsHtmlRenderer
                 PromptFailureMode.UnhandledException     => $"{n} {req} passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.",
                 _                                        => $"{n} {req} encountered rewrite failure: {Esc(mode.ToString())}.",
             };
-            var dismiss = $"<form method=\"post\" action=\"/stats/dismiss/{Esc(mode.ToString())}\" style=\"display:inline;margin-left:1rem;\"><button type=\"submit\" style=\"background:none;border:1px solid #e05252;color:#e05252;border-radius:3px;padding:.1rem .5rem;font-size:.85rem;cursor:pointer;\">Dismiss</button></form>";
-            sb.Append($"<div class=\"failure-warn\">&#9888; {msg}{dismiss}</div>");
+            var dismiss = $"<form method=\"post\" action=\"/stats/dismiss/{Esc(mode.ToString())}\" style=\"display:contents;\"><button type=\"submit\" class=\"dismiss-btn\">Dismiss</button></form>";
+            sb.Append($"<div class=\"failure-warn\"><span>&#9888; {msg}</span>{dismiss}</div>");
         }
     }
 
