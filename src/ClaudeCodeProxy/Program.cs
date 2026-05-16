@@ -50,7 +50,8 @@ var statsJsonOptions = new JsonSerializerOptions
 };
 app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) =>
 {
-    var (prev, next) = AdjacentDates(st, DateOnly.FromDateTime(DateTime.Now));
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), today, today);
     return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, prev, next), "text/html; charset=utf-8");
 });
 
@@ -62,7 +63,8 @@ app.MapGet("/stats/{date}", (string date, StatsTracker st, PricingCatalog pricin
         return Results.BadRequest("Date must be yyyy-MM-dd.");
     var snapshot = st.GetSnapshotForDate(d);
     if (snapshot is null) return Results.NotFound($"No stats for {date}.");
-    var (prev, next) = AdjacentDates(st, d);
+    var today = DateOnly.FromDateTime(DateTime.Now);
+    var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), d, today);
     return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, prev, next), "text/html; charset=utf-8");
 });
 
@@ -87,6 +89,7 @@ app.Map("{**path}", async (
     PromptRewriter rewriter,
     RequestDumper dumper,
     UsageLogger usageLogger,
+    StatsTracker st,
     IOptionsMonitor<ProxyOptions> proxyOpts,
     ILogger<Program> log) =>
 {
@@ -119,7 +122,19 @@ app.Map("{**path}", async (
 
             if (node is not null)
             {
-                mutated = await rewriter.RewriteAsync(node);
+                RewriteOutcome outcome;
+                try
+                {
+                    outcome = await rewriter.RewriteAsync(node);
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning(ex, "Unexpected exception during prompt rewrite — passing through original request");
+                    outcome = RewriteOutcome.Failure(PromptFailureMode.UnhandledException);
+                }
+
+                st.RecordRewriteOutcome(outcome);
+                mutated = outcome.Mutated;
                 if (mutated)
                 {
                     forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
@@ -194,19 +209,6 @@ static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
         if (s is not null) list.Add(s);
     }
     return list;
-}
-
-// Today is always the trailing edge — next is null even when target == today.
-static (DateOnly? prev, DateOnly? next) AdjacentDates(StatsTracker st, DateOnly target)
-{
-    var all = st.GetAvailableDates();
-    var today = DateOnly.FromDateTime(DateTime.Now);
-    var idx = ((IList<DateOnly>)all).IndexOf(target);
-    DateOnly? prev = null, next = null;
-    if (idx > 0) prev = all[idx - 1];
-    else if (idx < 0 && all.Count > 0) prev = all[^1]; // target not in list (no file yet for today)
-    if (idx >= 0 && idx < all.Count - 1 && target != today) next = all[idx + 1];
-    return (prev, next);
 }
 
 static string? ExtractModel(string? path)

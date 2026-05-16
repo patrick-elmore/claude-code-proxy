@@ -1,18 +1,20 @@
+using System.Collections.Frozen;
+
 namespace ClaudeCodeProxy;
 
 public static class HeaderCopying
 {
-    private static readonly HashSet<string> HopByHop = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly FrozenSet<string> HopByHop = new[]
     {
         "Connection", "Keep-Alive", "Transfer-Encoding", "TE",
         "Trailers", "Upgrade", "Proxy-Authorization", "Proxy-Authenticate"
-    };
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     // First three are HttpClient-managed; Accept-Encoding stripped so Vertex returns plain-text SSE.
-    private static readonly HashSet<string> RequestSkip = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly FrozenSet<string> RequestSkip = new[]
     {
         "Host", "Content-Type", "Content-Length", "Accept-Encoding"
-    };
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     public static void CopyRequestHeaders(HttpRequest source, HttpRequestMessage dest)
     {

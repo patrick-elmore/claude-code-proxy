@@ -11,7 +11,7 @@ public sealed class ProxyOptions
     // e.g. "https://aiplatform.googleapis.com/v1" — the incoming request path is appended verbatim.
     public string VertexBaseUrl { get; set; } = "https://global-aiplatform.googleapis.com/v1";
 
-    // {{key}} substitutions applied to the prompt file. Reserved for future use.
+    // {{key}} substitutions applied to the prompt file at request time.
     public Dictionary<string, string> Variables { get; set; } = new();
 }
 

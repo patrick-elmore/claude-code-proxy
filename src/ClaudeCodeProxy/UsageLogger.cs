@@ -134,7 +134,6 @@ public sealed class UsageLogger(
         }
         catch
         {
-            // Not parseable as JSON — leave HasUsage false.
         }
     }
 

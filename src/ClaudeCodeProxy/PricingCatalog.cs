@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Text.Json;
 
 namespace ClaudeCodeProxy;
@@ -5,7 +6,7 @@ namespace ClaudeCodeProxy;
 // Standard tier only — the 200K long-context threshold can't be detected without per-request input tracking.
 public sealed class PricingCatalog
 {
-    private readonly Dictionary<string, RateBlock> _standardRates;
+    private readonly FrozenDictionary<string, RateBlock> _standardRates;
     private readonly ILogger<PricingCatalog> _logger;
     private readonly HashSet<string> _missingModels = new();
     private readonly Lock _missingLock = new();
@@ -17,16 +18,16 @@ public sealed class PricingCatalog
         if (!File.Exists(path))
         {
             _logger.LogWarning("pricing.json not found at {Path}; cost calculation will return $0", path);
-            _standardRates = new Dictionary<string, RateBlock>();
+            _standardRates = FrozenDictionary<string, RateBlock>.Empty;
             return;
         }
 
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
-        _standardRates = new Dictionary<string, RateBlock>();
+        var rates = new Dictionary<string, RateBlock>();
         foreach (var prop in doc.RootElement.GetProperty("models").EnumerateObject())
         {
             var s = prop.Value.GetProperty("standard");
-            _standardRates[prop.Name] = new RateBlock(
+            rates[prop.Name] = new RateBlock(
                 Input: s.GetProperty("input").GetDecimal(),
                 Output: s.GetProperty("output").GetDecimal(),
                 CacheWrite5m: s.GetProperty("cache_write_5m").GetDecimal(),
@@ -34,6 +35,7 @@ public sealed class PricingCatalog
                 CacheHit: s.GetProperty("cache_hit").GetDecimal()
             );
         }
+        _standardRates = rates.ToFrozenDictionary();
         _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _standardRates.Count, path);
     }
 

@@ -1,0 +1,13 @@
+{
+  "models": {
+    "test-model": {
+      "standard": {
+        "input": 3.0,
+        "output": 15.0,
+        "cache_write_5m": 3.75,
+        "cache_write_1h": 4.5,
+        "cache_hit": 0.30
+      }
+    }
+  }
+}

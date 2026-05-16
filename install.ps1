@@ -71,6 +71,25 @@ if (Test-Path $AppSettings) {
 #  is still running and holding a file lock.)
 $existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($existingService) {
+    Write-Host ""
+    Write-Host "  '$ServiceName' is already installed." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Proceeding will:" -ForegroundColor Yellow
+    Write-Host "    - Stop and remove the running service" -ForegroundColor Yellow
+    Write-Host "    - Redeploy all binaries" -ForegroundColor Yellow
+    Write-Host "    - Reset appsettings.json (your configured paths and settings may be lost)" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  If you only want to update the binaries, use update.ps1 instead." -ForegroundColor Cyan
+    Write-Host "  update.ps1 preserves your appsettings.json and does not reset configuration." -ForegroundColor Cyan
+    Write-Host ""
+    $confirm = Read-Host "  Type 'yes' to proceed with full reinstall, or press Enter to cancel"
+    if ($confirm -ne 'yes') {
+        Write-Host ""
+        Write-Host "Cancelled. Run update.ps1 to rebuild and redeploy without touching your configuration." -ForegroundColor Green
+        exit 0
+    }
+    Write-Host ""
+
     if ($existingService.Status -eq 'Running') {
         Write-Host "Stopping existing service '$ServiceName'..."
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
