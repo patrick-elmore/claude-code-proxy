@@ -54,6 +54,12 @@ if (-not (Test-Path $AppSettings)) {
 # --- Backup user appsettings ---
 Write-Host "Backing up appsettings.json..."
 $appSettingsBackup = Get-Content $AppSettings -Raw
+$BackupDir  = Join-Path $InstallDir "config-backups"
+if (-not (Test-Path $BackupDir)) { New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null }
+$timestamp  = Get-Date -Format "yyyyMMdd-HHmmss"
+$backupFile = Join-Path $BackupDir "appsettings.$timestamp.json"
+Copy-Item $AppSettings $backupFile -Force
+Write-Host "Config backed up to $backupFile"
 
 # --- Stop service if running ---
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -72,9 +78,26 @@ dotnet publish $ProjectDir --configuration Release --runtime win-x64 --self-cont
 if ($LASTEXITCODE -ne 0) { Write-Error "Build failed."; exit 1 }
 Write-Host "Build complete."
 
-# --- Restore user appsettings ---
-Write-Host "Restoring appsettings.json..."
-Set-Content $AppSettings -Value $appSettingsBackup -Encoding UTF8
+# Merge any new keys from the freshly-published defaults into the live config.
+# Only adds keys that are absent; existing user values are never overwritten.
+function Merge-MissingKeys {
+    param([PSCustomObject]$Live, [PSCustomObject]$Template)
+    foreach ($key in ($Template | Get-Member -MemberType NoteProperty).Name) {
+        if (-not ($Live | Get-Member -MemberType NoteProperty -Name $key -ErrorAction SilentlyContinue)) {
+            $Live | Add-Member -MemberType NoteProperty -Name $key -Value $Template.$key
+            Write-Host "  + $key (new default from repo)"
+        } elseif ($Template.$key -is [PSCustomObject] -and $Live.$key -is [PSCustomObject]) {
+            Merge-MissingKeys -Live $Live.$key -Template $Template.$key
+        }
+    }
+}
+
+Write-Host "Merging new config keys from published defaults..."
+$liveConfig     = $appSettingsBackup | ConvertFrom-Json
+$templateConfig = Get-Content $AppSettings -Raw | ConvertFrom-Json
+Merge-MissingKeys -Live $liveConfig -Template $templateConfig
+$liveConfig | ConvertTo-Json -Depth 10 | Set-Content $AppSettings -Encoding UTF8
+Write-Host "Config merge complete."
 
 # --- Start service ---
 if ($service) {
