@@ -43,7 +43,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             return RewriteOutcome.Failure(PromptFailureMode.PromptFileNotFound);
         }
 
-        var (bulkBlock, identityFound) = FindBulkBlock(system);
+        var (bulkBlock, identityFound, bulkIndex) = FindBulkBlock(system);
         var identityNotRecognized = !identityFound;
 
         if (identityNotRecognized)
@@ -63,13 +63,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             return RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock, identityNotRecognized);
         }
 
-        var (boundaryIndex, marker) = FindDynamicBoundary(bulkText);
-        if (boundaryIndex < 0)
-        {
-            logger.LogDebug("No dynamic boundary marker found in bulk block — passthrough");
-            return RewriteOutcome.Failure(PromptFailureMode.NoBoundaryMarker, identityNotRecognized);
-        }
-
+        // Read and prepare the custom prompt — shared by both injection strategies below.
         string customPrompt;
         try
         {
@@ -84,6 +78,24 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         foreach (var (key, value) in options.CurrentValue.Variables)
             customPrompt = customPrompt.Replace("{{" + key + "}}", value);
 
+        var (boundaryIndex, marker) = FindDynamicBoundary(bulkText);
+        if (boundaryIndex < 0)
+        {
+            // Claude Code's session titler: single message + title-generation instruction. Skip injection.
+            if (body["messages"] is JsonArray msgs && msgs.Count == 1 &&
+                bulkText.Contains("Generate a concise, sentence-case title", StringComparison.Ordinal))
+            {
+                logger.LogDebug("Skipping injection — session title generation request");
+                return RewriteOutcome.NotApplicable;
+            }
+
+            // Sub-agent or custom-prompted request — no boundary marker, so insert our prompt as
+            // a new block before the role block rather than replacing within it.
+            system.Insert(bulkIndex, new JsonObject { ["type"] = "text", ["text"] = customPrompt });
+            logger.LogDebug("Injected custom prompt as new block at index {Index} (no boundary marker found)", bulkIndex);
+            return RewriteOutcome.Success(identityNotRecognized);
+        }
+
         var dynamicPortion = bulkText[boundaryIndex..];
         bulkBlock["text"] = customPrompt + dynamicPortion;
 
@@ -93,25 +105,22 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         return RewriteOutcome.Success(identityNotRecognized);
     }
 
-    private static (JsonObject? bulk, bool identityFound) FindBulkBlock(JsonArray system)
+    private static (JsonObject? bulk, bool identityFound, int bulkIndex) FindBulkBlock(JsonArray system)
     {
         JsonObject? bulk = null;
         var bulkLen = -1;
         var identityFound = false;
-        foreach (var node in system)
+        var bulkIndex = -1;
+        for (var i = 0; i < system.Count; i++)
         {
-            if (node is not JsonObject blk) continue;
+            if (system[i] is not JsonObject blk) continue;
             var text = blk["text"]?.GetValue<string>();
             if (text is null) continue;
             if (text.StartsWith(AttributionPrefix, StringComparison.Ordinal)) continue;
             if (KnownIdentityPrefixes.Contains(text)) { identityFound = true; continue; }
-            if (text.Length > bulkLen)
-            {
-                bulkLen = text.Length;
-                bulk = blk;
-            }
+            if (text.Length > bulkLen) { bulkLen = text.Length; bulk = blk; bulkIndex = i; }
         }
-        return (bulk, identityFound);
+        return (bulk, identityFound, bulkIndex);
     }
 
     private static (int index, string marker) FindDynamicBoundary(string text)

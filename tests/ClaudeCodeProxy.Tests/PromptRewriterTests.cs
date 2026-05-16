@@ -89,7 +89,10 @@ public sealed class PromptRewriterTests : IDisposable
     {
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
-            {"system": [{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}]}
+            {"system": [
+                {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}
+            ]}
             """);
 
         var result = await rewriter.RewriteAsync(node);
@@ -104,7 +107,7 @@ public sealed class PromptRewriterTests : IDisposable
     {
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
-            {"system": [{"type": "text", "text": "x-anthropic-billing-header some content"}]}
+            {"system": [{"type": "text", "text": "x-anthropic-billing-header cc_version=test"}]}
             """);
 
         var result = await rewriter.RewriteAsync(node);
@@ -114,17 +117,92 @@ public sealed class PromptRewriterTests : IDisposable
     }
 
     [Fact]
-    public async Task NoBoundaryMarker_NoBoundaryMarker()
+    public async Task NoBoundaryMarker_InjectsAsNewBlock()
     {
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
-            {"system": [{"type": "text", "text": "bulk content without any known boundary marker here"}]}
+            {"system": [
+                {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
+                {"type": "text", "text": "bulk content without any known boundary marker here"}
+            ]}
             """);
 
         var result = await rewriter.RewriteAsync(node);
 
-        result.Mutated.ShouldBeFalse();
-        result.FailureMode.ShouldBe(PromptFailureMode.NoBoundaryMarker);
+        result.Mutated.ShouldBeTrue();
+        result.FailureMode.ShouldBeNull();
+        var arr = node["system"]!.AsArray();
+        arr.Count.ShouldBe(3); // attribution + injected prompt + original bulk
+        arr[1]!["text"]!.GetValue<string>().ShouldBe("custom prompt");
+        arr[2]!["text"]!.GetValue<string>().ShouldBe("bulk content without any known boundary marker here");
+    }
+
+    [Fact]
+    public async Task NoBoundaryMarker_MultiBlock_InsertsAtCorrectPosition()
+    {
+        var rewriter = BuildRewriter("custom prompt");
+        var node = Parse("""
+            {"system": [
+                {"type": "text", "text": "x-anthropic-billing-header attribution"},
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+                {"type": "text", "text": "## Role\n\nYou are a specialized agent with no boundary markers."}
+            ]}
+            """);
+
+        var result = await rewriter.RewriteAsync(node);
+
+        result.Mutated.ShouldBeTrue();
+        result.IdentityNotRecognized.ShouldBeFalse();
+        var arr = node["system"]!.AsArray();
+        arr.Count.ShouldBe(4);
+        arr[0]!["text"]!.GetValue<string>().ShouldStartWith("x-anthropic-billing-header");
+        arr[1]!["text"]!.GetValue<string>().ShouldBe("You are Claude Code, Anthropic's official CLI for Claude.");
+        arr[2]!["text"]!.GetValue<string>().ShouldBe("custom prompt");
+        arr[3]!["text"]!.GetValue<string>().ShouldStartWith("## Role");
+    }
+
+    [Fact]
+    public async Task NoBoundaryMarker_RoleBlockContentUnchanged()
+    {
+        const string roleContent = "## Role\n\nYou are a quantitative analyst. Do not deviate from this role.";
+        var rewriter = BuildRewriter("custom prompt");
+        var node = new JsonObject
+        {
+            ["system"] = new JsonArray
+            {
+                new JsonObject { ["type"] = "text", ["text"] = "You are Claude Code, Anthropic's official CLI for Claude." },
+                new JsonObject { ["type"] = "text", ["text"] = roleContent }
+            }
+        };
+
+        await rewriter.RewriteAsync(node);
+
+        var arr = node["system"]!.AsArray();
+        arr[^1]!["text"]!.GetValue<string>().ShouldBe(roleContent);
+    }
+
+    [Fact]
+    public async Task TitleGenerationRequest_NotApplicable()
+    {
+        var rewriter = BuildRewriter("custom prompt");
+        var node = new JsonObject
+        {
+            ["system"] = new JsonArray
+            {
+                new JsonObject { ["type"] = "text", ["text"] = "x-anthropic-billing-header attribution" },
+                new JsonObject { ["type"] = "text", ["text"] = "You are Claude Code, Anthropic's official CLI for Claude." },
+                new JsonObject { ["type"] = "text", ["text"] = "Generate a concise, sentence-case title (3-7 words) that captures the main topic. Return JSON with a single \"title\" field." }
+            },
+            ["messages"] = new JsonArray
+            {
+                new JsonObject { ["role"] = "user", ["content"] = "Fix the login bug" }
+            }
+        };
+
+        var result = await rewriter.RewriteAsync(node);
+
+        result.ShouldBe(RewriteOutcome.NotApplicable);
+        node["system"]!.AsArray().Count.ShouldBe(3); // unchanged
     }
 
     // -----------------------------------------------------------------------
@@ -150,6 +228,7 @@ public sealed class PromptRewriterTests : IDisposable
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
             {"system": [
+                {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
                 {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
                 {"type": "text", "text": "old static\n# Session-specific guidance\ndynamic content"}
             ]}
@@ -192,6 +271,7 @@ public sealed class PromptRewriterTests : IDisposable
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
             {"system": [
+                {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
                 {"type": "text", "text": "short block\n# Session-specific guidance\ndynamic"},
                 {"type": "text", "text": "this is the longer block that should be chosen as bulk\n# Session-specific guidance\ndynamic"}
             ]}
@@ -201,8 +281,8 @@ public sealed class PromptRewriterTests : IDisposable
 
         result.Mutated.ShouldBeTrue();
         var arr = node["system"]!.AsArray();
-        arr[0]!["text"]!.GetValue<string>().ShouldBe("short block\n# Session-specific guidance\ndynamic");
-        arr[1]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
+        arr[1]!["text"]!.GetValue<string>().ShouldBe("short block\n# Session-specific guidance\ndynamic");
+        arr[2]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
     }
 
     [Fact]
@@ -211,7 +291,7 @@ public sealed class PromptRewriterTests : IDisposable
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
             {"system": [
-                {"type": "text", "text": "x-anthropic-billing-header attribution text"},
+                {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
                 {"type": "text", "text": "static content\n# Session-specific guidance\ndynamic"}
             ]}
             """);
@@ -220,7 +300,7 @@ public sealed class PromptRewriterTests : IDisposable
 
         result.Mutated.ShouldBeTrue();
         var arr = node["system"]!.AsArray();
-        arr[0]!["text"]!.GetValue<string>().ShouldBe("x-anthropic-billing-header attribution text");
+        arr[0]!["text"]!.GetValue<string>().ShouldStartWith("x-anthropic-billing-header");
         arr[1]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
     }
 
@@ -266,10 +346,12 @@ public sealed class PromptRewriterTests : IDisposable
         {
             ["system"] = new JsonArray
             {
+                new JsonObject { ["type"] = "text", ["text"] = "x-anthropic-billing-header cc_version=test" },
                 new JsonObject { ["type"] = "text", ["text"] = text }
             }
         };
 
+    // Returns the text of the last system block (the bulk block in BulkNode fixtures).
     private static string BulkText(JsonNode node) =>
-        node["system"]!.AsArray()[0]!["text"]!.GetValue<string>();
+        node["system"]!.AsArray()[^1]!["text"]!.GetValue<string>();
 }
