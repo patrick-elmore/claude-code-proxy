@@ -72,7 +72,7 @@ internal static class StatsHtmlRenderer
         sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; {uptimePart}</p>");
         sb.Append("</div><div class=\"page-header-icon\">").Append(HeaderIconSvg).Append("</div></div>");
 
-        AppendFailureBanners(sb, s.RewriteFailures);
+        AppendFailureBanners(sb, s.RewriteFailures, s.AcknowledgedFailures);
         sb.Append("<nav>");
         if (prevDate.HasValue)
             sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a><span class=\"sep\">|</span>");
@@ -239,7 +239,9 @@ internal static class StatsHtmlRenderer
 
         var aggregatedFailures = Enum.GetValues<PromptFailureMode>()
             .ToDictionary(m => m, m => snapshots.Sum(s => s.RewriteFailures.GetValueOrDefault(m)));
-        AppendFailureBanners(sb, aggregatedFailures);
+        var aggregatedAcknowledged = Enum.GetValues<PromptFailureMode>()
+            .ToDictionary(m => m, m => snapshots.Sum(s => s.AcknowledgedFailures.GetValueOrDefault(m)));
+        AppendFailureBanners(sb, aggregatedFailures, aggregatedAcknowledged);
         sb.Append("<nav>");
         sb.Append("<a href=\"/stats\">Today</a><span class=\"sep\">|</span>");
         sb.Append("<a href=\"/stats/week\">Week</a><span class=\"sep\">|</span>");
@@ -363,13 +365,17 @@ internal static class StatsHtmlRenderer
         return $"{(int)ts.TotalSeconds}s";
     }
 
-    private static void AppendFailureBanners(StringBuilder sb, IReadOnlyDictionary<PromptFailureMode, long> failures)
+    private static void AppendFailureBanners(
+        StringBuilder sb,
+        IReadOnlyDictionary<PromptFailureMode, long> failures,
+        IReadOnlyDictionary<PromptFailureMode, long> acknowledged)
     {
         foreach (var (mode, count) in failures)
         {
-            if (count <= 0) continue;
-            var n = N0(count);
-            var req = count == 1 ? "request" : "requests";
+            var unacknowledged = count - acknowledged.GetValueOrDefault(mode);
+            if (unacknowledged <= 0) continue;
+            var n = N0(unacknowledged);
+            var req = unacknowledged == 1 ? "request" : "requests";
             var msg = mode switch
             {
                 PromptFailureMode.PromptNotConfigured    => $"{n} {req} passed through unmodified &mdash; <code>Proxy:PromptFilePath</code> is not configured in <code>appsettings.json</code>.",
@@ -381,7 +387,8 @@ internal static class StatsHtmlRenderer
                 PromptFailureMode.UnhandledException     => $"{n} {req} passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.",
                 _                                        => $"{n} {req} encountered rewrite failure: {Esc(mode.ToString())}.",
             };
-            sb.Append($"<div class=\"failure-warn\">&#9888; {msg}</div>");
+            var dismiss = $"<form method=\"post\" action=\"/stats/dismiss/{Esc(mode.ToString())}\" style=\"display:inline;margin-left:1rem;\"><button type=\"submit\" style=\"background:none;border:1px solid #e05252;color:#e05252;border-radius:3px;padding:.1rem .5rem;font-size:.85rem;cursor:pointer;\">Dismiss</button></form>";
+            sb.Append($"<div class=\"failure-warn\">&#9888; {msg}{dismiss}</div>");
         }
     }
 

@@ -48,6 +48,14 @@ var statsJsonOptions = new JsonSerializerOptions
     PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     WriteIndented = true,
 };
+app.MapPost("/stats/dismiss/{mode}", (string mode, StatsTracker st) =>
+{
+    if (!Enum.TryParse<PromptFailureMode>(mode, ignoreCase: true, out var parsed))
+        return Results.BadRequest($"Unknown failure mode: {mode}");
+    st.AcknowledgeFailureMode(parsed);
+    return Results.Redirect("/stats");
+});
+
 app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) =>
 {
     var today = DateOnly.FromDateTime(DateTime.Now);

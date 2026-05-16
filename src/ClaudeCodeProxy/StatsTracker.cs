@@ -22,6 +22,7 @@ public sealed class StatsTracker
     private long _totalOutput;
     private long _totalDurationMs;
     private readonly Dictionary<PromptFailureMode, long> _rewriteFailures = InitFailures();
+    private readonly Dictionary<PromptFailureMode, long> _acknowledgedFailures = InitFailures();
     private readonly Dictionary<string, ModelBucket> _byModel = new();
     private readonly ConcurrentDictionary<DateTimeOffset, HourlyBucket> _hourly = new();
 
@@ -149,6 +150,9 @@ public sealed class StatsTracker
                 RewriteFailures: (file.RewriteFailures ?? [])
                     .Where(kvp => Enum.TryParse<PromptFailureMode>(kvp.Key, out _))
                     .ToDictionary(kvp => Enum.Parse<PromptFailureMode>(kvp.Key), kvp => kvp.Value),
+                AcknowledgedFailures: (file.AcknowledgedFailures ?? [])
+                    .Where(kvp => Enum.TryParse<PromptFailureMode>(kvp.Key, out _))
+                    .ToDictionary(kvp => Enum.Parse<PromptFailureMode>(kvp.Key), kvp => kvp.Value),
                 ByModel: file.ByModel.ToDictionary(
                     kvp => kvp.Key,
                     kvp =>
@@ -217,6 +221,7 @@ public sealed class StatsTracker
                 HitRatePct: Math.Round(hitPct, 1),
                 AvgDurationMs: Math.Round(avgDuration, 0),
                 RewriteFailures: new Dictionary<PromptFailureMode, long>(_rewriteFailures),
+                AcknowledgedFailures: new Dictionary<PromptFailureMode, long>(_acknowledgedFailures),
                 ByModel: _byModel.ToDictionary(
                     kvp => kvp.Key,
                     kvp =>
@@ -271,6 +276,15 @@ public sealed class StatsTracker
         }
     }
 
+    public void AcknowledgeFailureMode(PromptFailureMode mode)
+    {
+        lock (_lock)
+        {
+            _acknowledgedFailures[mode] = _rewriteFailures[mode];
+            PersistToDisk();
+        }
+    }
+
     private static Dictionary<PromptFailureMode, long> InitFailures() =>
         Enum.GetValues<PromptFailureMode>().ToDictionary(m => m, _ => 0L);
 
@@ -298,6 +312,7 @@ public sealed class StatsTracker
         _totalOutput = 0;
         _totalDurationMs = 0;
         foreach (var mode in Enum.GetValues<PromptFailureMode>()) _rewriteFailures[mode] = 0;
+        foreach (var mode in Enum.GetValues<PromptFailureMode>()) _acknowledgedFailures[mode] = 0;
         _byModel.Clear();
         _hourly.Clear();
     }
@@ -347,6 +362,10 @@ public sealed class StatsTracker
             foreach (var (key, count) in snapshot.RewriteFailures ?? [])
                 if (Enum.TryParse<PromptFailureMode>(key, out var mode))
                     _rewriteFailures[mode] = count;
+
+            foreach (var (key, count) in snapshot.AcknowledgedFailures ?? [])
+                if (Enum.TryParse<PromptFailureMode>(key, out var mode))
+                    _acknowledgedFailures[mode] = count;
 
             if (snapshot.StartedAt != default)
                 _startedAt = snapshot.StartedAt;
@@ -400,6 +419,7 @@ public sealed class StatsTracker
         Totals: new TokenTotals(_totalInputUncached, _totalCacheRead, _totalCacheCreation5m, _totalCacheCreation1h, _totalOutput),
         TotalDurationMs: _totalDurationMs,
         RewriteFailures: _rewriteFailures.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value),
+        AcknowledgedFailures: _acknowledgedFailures.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value),
         ByModel: new Dictionary<string, ModelBucket>(_byModel),
         Hourly: _hourly
             .Select(kvp =>
@@ -425,6 +445,7 @@ public sealed class StatsTracker
         TokenTotals Totals,
         long TotalDurationMs,
         Dictionary<string, long> RewriteFailures,
+        Dictionary<string, long> AcknowledgedFailures,
         Dictionary<string, ModelBucket> ByModel,
         List<HourlyFileEntry> Hourly
     );
@@ -476,6 +497,7 @@ public sealed record StatsSnapshot(
     double HitRatePct,
     double AvgDurationMs,
     IReadOnlyDictionary<PromptFailureMode, long> RewriteFailures,
+    IReadOnlyDictionary<PromptFailureMode, long> AcknowledgedFailures,
     IReadOnlyDictionary<string, ModelSnapshot> ByModel,
     IReadOnlyList<HourlyStats> Hourly
 );
