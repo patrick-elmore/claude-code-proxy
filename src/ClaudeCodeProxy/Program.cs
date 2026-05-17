@@ -102,6 +102,7 @@ app.Map("{**path}", async (
     ILogger<Program> log) =>
 {
     var requestPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
+    var model = ExtractModel(requestPath);
     var hasBody = ctx.Request.ContentLength is > 0
         || ctx.Request.Headers.ContainsKey("Transfer-Encoding");
 
@@ -119,6 +120,13 @@ app.Map("{**path}", async (
         {
             // Dump even when disabled — lets you compare raw vs mutated traffic.
             await dumper.DumpAsync("original", null, originalBytes, requestPath, ctx.RequestAborted);
+            forwardBytes = originalBytes;
+        }
+        else if (model is null)
+        {
+            // Unknown path — not a model API call. Record and forward unchanged.
+            log.LogWarning("Request to unknown path {Path} — forwarding unchanged", requestPath);
+            st.RecordUnknownPath(requestPath);
             forwardBytes = originalBytes;
         }
         else
@@ -205,7 +213,6 @@ app.Map("{**path}", async (
     log.LogInformation("{Method} {Path} -> {Status}",
         ctx.Request.Method, requestPath, (int)response.StatusCode);
 
-    var model = ExtractModel(requestPath);
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
     await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, ctx.RequestAborted);
 });

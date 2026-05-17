@@ -74,7 +74,7 @@ internal static class StatsHtmlRenderer
         sb.Append($"<p class=\"muted\">stats for {Esc(s.Date)} &middot; {uptimePart}</p>");
         sb.Append("</div><div class=\"page-header-icon\">").Append(HeaderIconSvg).Append("</div></div>");
 
-        AppendFailureBanners(sb, s.RewriteFailures, s.AcknowledgedFailures);
+        AppendFailureBanners(sb, s.RewriteFailures, s.AcknowledgedFailures, s.UnknownPaths);
         sb.Append("<nav>");
         if (prevDate.HasValue)
             sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a><span class=\"sep\">|</span>");
@@ -245,7 +245,8 @@ internal static class StatsHtmlRenderer
             .ToDictionary(m => m, m => snapshots.Sum(s => s.RewriteFailures.GetValueOrDefault(m)));
         var aggregatedAcknowledged = Enum.GetValues<PromptFailureMode>()
             .ToDictionary(m => m, m => snapshots.Sum(s => s.AcknowledgedFailures.GetValueOrDefault(m)));
-        AppendFailureBanners(sb, aggregatedFailures, aggregatedAcknowledged);
+        var aggregatedUnknownPaths = snapshots.SelectMany(s => s.UnknownPaths).Distinct().ToList();
+        AppendFailureBanners(sb, aggregatedFailures, aggregatedAcknowledged, aggregatedUnknownPaths);
         sb.Append("<nav>");
         sb.Append("<a href=\"/stats\">Today</a><span class=\"sep\">|</span>");
         sb.Append("<a href=\"/stats/week\">Week</a><span class=\"sep\">|</span>");
@@ -372,7 +373,8 @@ internal static class StatsHtmlRenderer
     private static void AppendFailureBanners(
         StringBuilder sb,
         IReadOnlyDictionary<PromptFailureMode, long> failures,
-        IReadOnlyDictionary<PromptFailureMode, long> acknowledged)
+        IReadOnlyDictionary<PromptFailureMode, long> acknowledged,
+        IReadOnlyList<string> unknownPaths)
     {
         foreach (var (mode, count) in failures)
         {
@@ -380,17 +382,26 @@ internal static class StatsHtmlRenderer
             if (unacknowledged <= 0) continue;
             var n = N0(unacknowledged);
             var req = unacknowledged == 1 ? "request" : "requests";
-            var msg = mode switch
+            string msg;
+            if (mode == PromptFailureMode.UnknownPath)
             {
-                PromptFailureMode.PromptNotConfigured    => $"{n} {req} passed through unmodified &mdash; <code>Proxy:PromptFilePath</code> is not configured in <code>appsettings.json</code>.",
-                PromptFailureMode.PromptFileNotFound     => $"{n} {req} passed through unmodified &mdash; prompt file not found on disk. Check <code>Proxy:PromptFilePath</code> in <code>appsettings.json</code>.",
-                PromptFailureMode.PromptFileReadError    => $"{n} {req} passed through unmodified &mdash; prompt file became unreadable during the request (I/O error). Check file permissions and disk health.",
-                PromptFailureMode.NoBulkBlock            => $"{n} {req} passed through unmodified &mdash; no bulk system block found. Claude Code&rsquo;s request shape may have changed.",
-                PromptFailureMode.NoBoundaryMarker       => $"{n} {req} passed through unmodified &mdash; bulk block found but no dynamic boundary marker present. Claude Code&rsquo;s prompt structure may have changed.",
-                PromptFailureMode.IdentityNotRecognized  => $"{n} {req} contained no recognized Claude Code identity block. The CLI&rsquo;s identity strings may have changed &mdash; update <code>KnownIdentityPrefixes</code> in <code>PromptRewriter.cs</code>.",
-                PromptFailureMode.UnhandledException     => $"{n} {req} passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.",
-                _                                        => $"{n} {req} encountered rewrite failure: {Esc(mode.ToString())}.",
-            };
+                var paths = string.Join("", unknownPaths.Select(p => $"<li><code>{Esc(p)}</code></li>"));
+                msg = $"{n} {req} forwarded without prompt injection &mdash; path not recognised as a model API call.<ul style=\"margin:.25rem 0 0 1.25rem;\">{paths}</ul>";
+            }
+            else
+            {
+                msg = mode switch
+                {
+                    PromptFailureMode.PromptNotConfigured   => $"{n} {req} passed through unmodified &mdash; <code>Proxy:PromptFilePath</code> is not configured in <code>appsettings.json</code>.",
+                    PromptFailureMode.PromptFileNotFound    => $"{n} {req} passed through unmodified &mdash; prompt file not found on disk. Check <code>Proxy:PromptFilePath</code> in <code>appsettings.json</code>.",
+                    PromptFailureMode.PromptFileReadError   => $"{n} {req} passed through unmodified &mdash; prompt file became unreadable during the request (I/O error). Check file permissions and disk health.",
+                    PromptFailureMode.NoBulkBlock           => $"{n} {req} passed through unmodified &mdash; no bulk system block found. Claude Code&rsquo;s request shape may have changed.",
+                    PromptFailureMode.NoBoundaryMarker      => $"{n} {req} passed through unmodified &mdash; bulk block found but no dynamic boundary marker present. Claude Code&rsquo;s prompt structure may have changed.",
+                    PromptFailureMode.IdentityNotRecognized => $"{n} {req} contained no recognized Claude Code identity block. The CLI&rsquo;s identity strings may have changed &mdash; update <code>KnownIdentityPrefixes</code> in <code>PromptRewriter.cs</code>.",
+                    PromptFailureMode.UnhandledException    => $"{n} {req} passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.",
+                    _                                       => $"{n} {req} encountered rewrite failure: {Esc(mode.ToString())}.",
+                };
+            }
             var dismiss = $"<form method=\"post\" action=\"/stats/dismiss/{Esc(mode.ToString())}\" style=\"display:contents;\"><button type=\"submit\" class=\"dismiss-btn\">Dismiss</button></form>";
             sb.Append($"<div class=\"failure-warn\"><span>&#9888; {msg}</span>{dismiss}</div>");
         }

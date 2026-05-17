@@ -9,6 +9,7 @@ public enum PromptFailureMode
     NoBoundaryMarker,
     IdentityNotRecognized,
     UnhandledException,
+    UnknownPath,
 }
 
 public readonly record struct RewriteOutcome

@@ -23,6 +23,8 @@ public sealed class StatsTracker
     private long _totalDurationMs;
     private readonly Dictionary<PromptFailureMode, long> _rewriteFailures = InitFailures();
     private readonly Dictionary<PromptFailureMode, long> _acknowledgedFailures = InitFailures();
+    private readonly HashSet<string> _unknownPaths = new();
+    private const int MaxUnknownPaths = 20;
     private readonly Dictionary<string, ModelBucket> _byModel = new();
     private readonly ConcurrentDictionary<DateTimeOffset, HourlyBucket> _hourly = new();
 
@@ -153,6 +155,7 @@ public sealed class StatsTracker
                 AcknowledgedFailures: (file.AcknowledgedFailures ?? [])
                     .Where(kvp => Enum.TryParse<PromptFailureMode>(kvp.Key, out _))
                     .ToDictionary(kvp => Enum.Parse<PromptFailureMode>(kvp.Key), kvp => kvp.Value),
+                UnknownPaths: file.UnknownPaths ?? [],
                 ByModel: file.ByModel.ToDictionary(
                     kvp => kvp.Key,
                     kvp =>
@@ -222,6 +225,7 @@ public sealed class StatsTracker
                 AvgDurationMs: Math.Round(avgDuration, 0),
                 RewriteFailures: new Dictionary<PromptFailureMode, long>(_rewriteFailures),
                 AcknowledgedFailures: new Dictionary<PromptFailureMode, long>(_acknowledgedFailures),
+                UnknownPaths: [.. _unknownPaths],
                 ByModel: _byModel.ToDictionary(
                     kvp => kvp.Key,
                     kvp =>
@@ -276,6 +280,17 @@ public sealed class StatsTracker
         }
     }
 
+    public void RecordUnknownPath(string path)
+    {
+        lock (_lock)
+        {
+            MaybeRollover();
+            _rewriteFailures[PromptFailureMode.UnknownPath]++;
+            if (_unknownPaths.Count < MaxUnknownPaths) _unknownPaths.Add(path);
+            PersistToDisk();
+        }
+    }
+
     public void AcknowledgeFailureMode(PromptFailureMode mode)
     {
         lock (_lock)
@@ -313,6 +328,7 @@ public sealed class StatsTracker
         _totalDurationMs = 0;
         foreach (var mode in Enum.GetValues<PromptFailureMode>()) _rewriteFailures[mode] = 0;
         foreach (var mode in Enum.GetValues<PromptFailureMode>()) _acknowledgedFailures[mode] = 0;
+        _unknownPaths.Clear();
         _byModel.Clear();
         _hourly.Clear();
     }
@@ -367,6 +383,9 @@ public sealed class StatsTracker
                 if (Enum.TryParse<PromptFailureMode>(key, out var mode))
                     _acknowledgedFailures[mode] = count;
 
+            foreach (var p in snapshot.UnknownPaths ?? [])
+                if (_unknownPaths.Count < MaxUnknownPaths) _unknownPaths.Add(p);
+
             if (snapshot.StartedAt != default)
                 _startedAt = snapshot.StartedAt;
 
@@ -420,6 +439,7 @@ public sealed class StatsTracker
         TotalDurationMs: _totalDurationMs,
         RewriteFailures: _rewriteFailures.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value),
         AcknowledgedFailures: _acknowledgedFailures.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value),
+        UnknownPaths: [.. _unknownPaths],
         ByModel: new Dictionary<string, ModelBucket>(_byModel),
         Hourly: _hourly
             .Select(kvp =>
@@ -446,6 +466,7 @@ public sealed class StatsTracker
         long TotalDurationMs,
         Dictionary<string, long> RewriteFailures,
         Dictionary<string, long> AcknowledgedFailures,
+        List<string> UnknownPaths,
         Dictionary<string, ModelBucket> ByModel,
         List<HourlyFileEntry> Hourly
     );
@@ -498,6 +519,7 @@ public sealed record StatsSnapshot(
     double AvgDurationMs,
     IReadOnlyDictionary<PromptFailureMode, long> RewriteFailures,
     IReadOnlyDictionary<PromptFailureMode, long> AcknowledgedFailures,
+    IReadOnlyList<string> UnknownPaths,
     IReadOnlyDictionary<string, ModelSnapshot> ByModel,
     IReadOnlyList<HourlyStats> Hourly
 );
