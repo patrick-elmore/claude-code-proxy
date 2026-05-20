@@ -18,6 +18,7 @@ public sealed class ProxyOptions
 public sealed class DumpOptions
 {
     public bool Enabled { get; set; } = false;
+    public bool FailureDumpEnabled { get; set; } = false;
     public int MaxRequests { get; set; } = 5;
 
     // Use Windows-style paths — WSL paths are misinterpreted. Default is a placeholder; install.ps1 rewrites this on first install.

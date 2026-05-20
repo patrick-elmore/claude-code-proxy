@@ -127,6 +127,7 @@ app.Map("{**path}", async (
             // Unknown path — not a model API call. Record and forward unchanged.
             log.LogWarning("Request to unknown path {Path} — forwarding unchanged", requestPath);
             st.RecordUnknownPath(requestPath);
+            await dumper.DumpFailureAsync("UnknownPath", originalBytes, requestPath, ctx.RequestAborted);
             forwardBytes = originalBytes;
         }
         else
@@ -155,6 +156,10 @@ app.Map("{**path}", async (
                 }
 
                 st.RecordRewriteOutcome(outcome);
+                var dumpMode = outcome.FailureMode?.ToString()
+                    ?? (outcome.IdentityNotRecognized ? "IdentityNotRecognized" : null);
+                if (dumpMode is not null)
+                    await dumper.DumpFailureAsync(dumpMode, originalBytes, requestPath, ctx.RequestAborted);
                 mutated = outcome.Mutated;
                 if (mutated)
                 {
