@@ -8,6 +8,23 @@
     "Models without a long_context block do not support the 1M context tier on Vertex; cost calculation should treat a >=200K request against such a model as an error."
   ],
   "models": {
+    "claude-opus-4-8": {
+      "display_name": "Claude Opus 4.8",
+      "standard": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      },
+      "long_context": {
+        "input": 5.00,
+        "output": 25.00,
+        "cache_write_5m": 6.25,
+        "cache_write_1h": 10.00,
+        "cache_hit": 0.50
+      }
+    },
     "claude-opus-4-7": {
       "display_name": "Claude Opus 4.7",
       "standard": {

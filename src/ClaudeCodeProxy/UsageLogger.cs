@@ -9,11 +9,11 @@ public sealed class UsageLogger(
     IOptionsMonitor<DumpOptions> dumpOpts,
     StatsTracker stats)
 {
-    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, CancellationToken ct)
+    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, DateTimeOffset startedAt, CancellationToken ct)
     {
         var current = new RequestStats(
             Guid.NewGuid().ToString("N")[..8],
-            DateTimeOffset.UtcNow)
+            startedAt)
         {
             Model = model,
         };

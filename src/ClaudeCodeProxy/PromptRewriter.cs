@@ -30,6 +30,8 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         // Not a message-shaped request — rewriting was never applicable, nothing to track.
         if (root is not JsonObject body) return RewriteOutcome.NotApplicable;
         if (body["system"] is not JsonArray system || system.Count == 0) return RewriteOutcome.NotApplicable;
+        // max_tokens:1 is Claude Code's model-availability probe — nothing to inject.
+        if (body["max_tokens"]?.GetValue<int>() == 1) return RewriteOutcome.NotApplicable;
 
         var promptPath = options.CurrentValue.PromptFilePath;
         if (string.IsNullOrWhiteSpace(promptPath))

@@ -208,6 +208,7 @@ app.Map("{**path}", async (
     HeaderCopying.CopyRequestHeaders(ctx.Request, upstream);
 
     var client = httpClientFactory.CreateClient("vertex");
+    var requestStartedAt = DateTimeOffset.UtcNow;
     using var response = await client.SendAsync(
         upstream, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
 
@@ -219,7 +220,7 @@ app.Map("{**path}", async (
         ctx.Request.Method, requestPath, (int)response.StatusCode);
 
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
-    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, ctx.RequestAborted);
+    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, requestStartedAt, ctx.RequestAborted);
 });
 
 app.Run();
