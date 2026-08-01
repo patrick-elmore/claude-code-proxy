@@ -6,22 +6,35 @@ namespace ClaudeCodeProxy;
 
 internal static class StatsHtmlRenderer
 {
-    public static string Render(StatsSnapshot s, PricingCatalog pricing,
-        DateOnly? prevDate = null, DateOnly? nextDate = null)
+    public static string Render(StatsSnapshot s, PricingCatalog pricing, string version,
+        DateOnly? prevDate = null, DateOnly? nextDate = null, string? provider = null)
     {
-        var totalIn = s.Totals.InputUncached + s.Totals.CacheRead + s.Totals.CacheCreation;
+        var filteredModels = FilteredModels(s, provider);
+        var snapshotDate = SnapshotDate(s);
 
-        var perModelCost = new Dictionary<string, decimal>(s.ByModel.Count);
+        var perModelCost = new Dictionary<string, decimal>();
+        long filteredRequests = 0, filteredFailed = 0;
+        long filteredUncached = 0, filteredRead = 0, filteredCc5m = 0, filteredCc1h = 0, filteredOutput = 0;
         decimal dayTotalCost = 0m;
-        foreach (var (model, m) in s.ByModel)
+        foreach (var (key, m) in filteredModels)
         {
-            var cost = pricing.CalculateCostUsd(model, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output);
-            perModelCost[model] = cost;
+            var modelName = m.Model ?? key;
+            filteredRequests += m.Requests;
+            filteredFailed   += m.Failed;
+            filteredUncached += m.InputUncached;
+            filteredRead     += m.CacheRead;
+            filteredCc5m     += m.CacheCreation5m;
+            filteredCc1h     += m.CacheCreation1h;
+            filteredOutput   += m.Output;
+            var cost = pricing.CalculateCostUsd(modelName, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output, snapshotDate);
+            perModelCost[key] = cost;
             dayTotalCost += cost;
         }
+        var filteredTotalIn = filteredUncached + filteredRead + filteredCc5m + filteredCc1h;
+        var filteredHitPct  = filteredTotalIn > 0 ? 100.0 * filteredRead / filteredTotalIn : 0;
 
-        // Hourly buckets don't carry per-model data, so per-hour cost uses a blended rate from today's by-model mix.
-        var blended = ComputeBlendedRates(s, pricing);
+        // Blended rate uses filtered models only so hourly cost footnote reflects the active filter.
+        var blended = ComputeBlendedRates(filteredModels, pricing, snapshotDate);
 
         var sb = new StringBuilder(8192);
 
@@ -62,6 +75,12 @@ internal static class StatsHtmlRenderer
             .failure-warn { display: flex; align-items: center; gap: 1rem; background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
             .failure-warn > span { flex: 1; min-width: 0; }
             .dismiss-btn { flex-shrink: 0; background: #3a3a3a; border: 1px solid #555; color: #ccc; border-radius: 3px; padding: .15rem .6rem; font-size: .82rem; cursor: pointer; white-space: nowrap; }
+            nav { display: flex; align-items: baseline; justify-content: space-between; }
+            .nav-left { display: inline; }
+            .nav-right { display: flex; gap: .4rem; align-items: center; }
+            .prov-btn { color: #9ab; text-decoration: none; margin-right: 0; padding: .1rem .45rem; border: 1px solid #333; border-radius: 3px; font-size: .85rem; }
+            .prov-btn:hover { border-color: #555; text-decoration: none; }
+            .prov-active { color: #fff; border-color: #555; background: #2d2d2d; }
             </style>
             </head><body>
             """);
@@ -75,42 +94,52 @@ internal static class StatsHtmlRenderer
         sb.Append("</div><div class=\"page-header-icon\">").Append(HeaderIconSvg).Append("</div></div>");
 
         AppendFailureBanners(sb, s.RewriteFailures, s.AcknowledgedFailures, s.UnknownPaths);
-        sb.Append("<nav>");
+
+        var basePath = isHistorical ? $"/stats/{s.Date}" : "/stats";
+        var provQ = provider is not null ? $"?provider={provider}" : "";
+        sb.Append("<nav><span class=\"nav-left\">");
         if (prevDate.HasValue)
-            sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a><span class=\"sep\">|</span>");
+            sb.Append($"<a href=\"/stats/{prevDate.Value:yyyy-MM-dd}{provQ}\">&#8592; {prevDate.Value:yyyy-MM-dd}</a><span class=\"sep\">|</span>");
         if (isHistorical)
-            sb.Append("<a href=\"/stats\">Today</a><span class=\"sep\">|</span>");
-        sb.Append("<a href=\"/stats/week\">Week</a><span class=\"sep\">|</span>");
-        sb.Append("<a href=\"/stats/month\">Month</a>");
+            sb.Append($"<a href=\"/stats{provQ}\">Today</a><span class=\"sep\">|</span>");
+        sb.Append($"<a href=\"/stats/week{provQ}\">Week</a><span class=\"sep\">|</span>");
+        sb.Append($"<a href=\"/stats/month{provQ}\">Month</a>");
         if (nextDate.HasValue)
-            sb.Append($"<span class=\"sep\">|</span><a href=\"/stats/{nextDate.Value:yyyy-MM-dd}\">{nextDate.Value:yyyy-MM-dd} &#8594;</a>");
+            sb.Append($"<span class=\"sep\">|</span><a href=\"/stats/{nextDate.Value:yyyy-MM-dd}{provQ}\">{nextDate.Value:yyyy-MM-dd} &#8594;</a>");
+        sb.Append("</span>");
+        AppendProviderButtons(sb, basePath, provider);
         sb.Append("</nav>");
 
-        sb.Append("<h2>Today</h2>");
+        var sectionTitle = provider is not null ? $"Today ({provider})" : "Today";
+        sb.Append($"<h2>{sectionTitle}</h2>");
 
-        var failedSuffix = s.FailedCount > 0
-            ? $" <span class=\"muted err\">({N0(s.FailedCount)} failed)</span>"
+        var failedSuffix = filteredFailed > 0
+            ? $" <span class=\"muted err\">({N0(filteredFailed)} failed)</span>"
             : "";
-        sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(s.RequestCount)}</span>{failedSuffix}</div>");
-        sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(s.HitRatePct)}\">{s.HitRatePct:F0}%</span> <span class=\"muted\">on {N0(totalIn)} input tokens</span></div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(filteredRequests)}</span>{failedSuffix}</div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(filteredHitPct)}\">{filteredHitPct:F0}%</span> <span class=\"muted\">on {N0(filteredTotalIn)} input tokens</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">avg latency</span><span class=\"v\">{s.AvgDurationMs:F0} ms</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">total cost</span><span class=\"v cost\">{Money(dayTotalCost)}</span></div>");
 
         sb.Append("<h2>Token totals</h2>");
         sb.Append("<table><tr><th>type</th><th class=\"num\">tokens</th></tr>");
-        sb.Append($"<tr><td class=\"hit\">cache read</td><td class=\"num\">{N0(s.Totals.CacheRead)}</td></tr>");
-        sb.Append($"<tr><td class=\"warn\">cache creation</td><td class=\"num\">{N0(s.Totals.CacheCreation)}</td></tr>");
-        sb.Append($"<tr><td>uncached input</td><td class=\"num\">{N0(s.Totals.InputUncached)}</td></tr>");
-        sb.Append($"<tr><td>output</td><td class=\"num\">{N0(s.Totals.Output)}</td></tr>");
+        sb.Append($"<tr><td class=\"hit\">cache read</td><td class=\"num\">{N0(filteredRead)}</td></tr>");
+        sb.Append($"<tr><td class=\"warn\">cache creation</td><td class=\"num\">{N0(filteredCc5m + filteredCc1h)}</td></tr>");
+        sb.Append($"<tr><td>uncached input</td><td class=\"num\">{N0(filteredUncached)}</td></tr>");
+        sb.Append($"<tr><td>output</td><td class=\"num\">{N0(filteredOutput)}</td></tr>");
         sb.Append("</table>");
 
-        if (s.ByModel.Count > 0)
+        if (filteredModels.Count > 0)
         {
             sb.Append("<h2>By model</h2>");
             sb.Append("<table><tr><th>model</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">hit %</th><th class=\"num\">avg ms</th><th class=\"num\">cache read</th><th class=\"num\">cache create</th><th class=\"num\">uncached</th><th class=\"num\">output</th><th class=\"num\">cost</th></tr>");
-            foreach (var (model, m) in s.ByModel.OrderBy(x => x.Key))
+            foreach (var (key, m) in filteredModels.OrderBy(x => x.Value.Model ?? x.Key).ThenBy(x => x.Value.Provider))
             {
-                sb.Append($"<tr><td class=\"mono\">{Esc(model)}</td>")
+                var modelName = m.Model ?? key;
+                var providerSuffix = provider is null && m.Provider is not null
+                    ? $" <span class=\"muted\">({Esc(m.Provider)})</span>"
+                    : "";
+                sb.Append($"<tr><td class=\"mono\">{Esc(modelName)}{providerSuffix}</td>")
                   .Append($"<td class=\"num\">{N0(m.Requests)}</td>")
                   .Append($"<td class=\"num {(m.Failed > 0 ? "err" : "")}\">{N0(m.Failed)}</td>")
                   .Append($"<td class=\"num {HitClass(m.HitRatePct)}\">{m.HitRatePct:F0}%</td>")
@@ -119,7 +148,34 @@ internal static class StatsHtmlRenderer
                   .Append($"<td class=\"num\">{N0(m.CacheCreation)}</td>")
                   .Append($"<td class=\"num\">{N0(m.InputUncached)}</td>")
                   .Append($"<td class=\"num\">{N0(m.Output)}</td>")
-                  .Append($"<td class=\"num cost\">{Money(perModelCost[model])}</td></tr>");
+                  .Append($"<td class=\"num cost\">{Money(perModelCost[key])}</td></tr>");
+            }
+            sb.Append("</table>");
+        }
+
+        var filteredEndpoints = s.ByEndpoint
+            .Where(kvp => provider is null || kvp.Value.Provider == provider)
+            .OrderBy(kvp => kvp.Value.Provider)
+            .ThenBy(kvp => kvp.Key)
+            .ToList();
+        if (filteredEndpoints.Count > 0)
+        {
+            sb.Append("<h2>Endpoint routing</h2>");
+            if (provider is null)
+                sb.Append("<table><tr><th>provider</th><th>endpoint</th><th class=\"num\">requests</th><th class=\"num\">failed</th></tr>");
+            else
+                sb.Append("<table><tr><th>endpoint</th><th class=\"num\">requests</th><th class=\"num\">failed</th></tr>");
+            foreach (var (url, ep) in filteredEndpoints)
+            {
+                if (provider is null)
+                    sb.Append($"<tr><td>{(ep.Provider is not null ? Esc(ep.Provider) : "&mdash;")}</td>")
+                      .Append($"<td class=\"mono\">{Esc(url)}</td>")
+                      .Append($"<td class=\"num\">{N0(ep.Requests)}</td>")
+                      .Append($"<td class=\"num {(ep.Failed > 0 ? "err" : "")}\">{N0(ep.Failed)}</td></tr>");
+                else
+                    sb.Append($"<tr><td class=\"mono\">{Esc(url)}</td>")
+                      .Append($"<td class=\"num\">{N0(ep.Requests)}</td>")
+                      .Append($"<td class=\"num {(ep.Failed > 0 ? "err" : "")}\">{N0(ep.Failed)}</td></tr>");
             }
             sb.Append("</table>");
         }
@@ -131,63 +187,92 @@ internal static class StatsHtmlRenderer
             foreach (var h in s.Hourly)
             {
                 var hourLabel = h.Hour.LocalDateTime.ToString("HH:mm", CultureInfo.InvariantCulture);
+                var ph = provider is not null ? h.ByProvider?.GetValueOrDefault(provider) : null;
+                var rowReq      = ph?.Requests      ?? h.Requests;
+                var rowFailed   = ph?.FailedCount   ?? h.FailedCount;
+                var rowUncached = ph?.InputUncached ?? h.InputUncached;
+                var rowRead     = ph?.CacheRead     ?? h.CacheRead;
+                var rowCc5m     = ph?.CacheCreation5m ?? h.CacheCreation5m;
+                var rowCc1h     = ph?.CacheCreation1h ?? h.CacheCreation1h;
+                var rowOutput   = ph?.Output        ?? h.Output;
+                var rowHitPct   = ph?.HitRatePct    ?? h.HitRatePct;
+                var rowAvgMs    = ph?.AvgDurationMs ?? h.AvgDurationMs;
                 var hourCost = blended.HasValue
-                    ? (h.InputUncached * blended.Value.Input
-                       + h.CacheRead * blended.Value.CacheHit
-                       + h.CacheCreation5m * blended.Value.CacheWrite5m
-                       + h.CacheCreation1h * blended.Value.CacheWrite1h
-                       + h.Output * blended.Value.Output) / 1_000_000m
+                    ? (rowUncached * blended.Value.Input
+                       + rowRead    * blended.Value.CacheHit
+                       + rowCc5m   * blended.Value.CacheWrite5m
+                       + rowCc1h   * blended.Value.CacheWrite1h
+                       + rowOutput * blended.Value.Output) / 1_000_000m
                     : 0m;
                 sb.Append($"<tr><td>{Esc(hourLabel)}</td>")
-                  .Append($"<td class=\"num\">{N0(h.Requests)}</td>")
-                  .Append($"<td class=\"num {(h.FailedCount > 0 ? "err" : "")}\">{N0(h.FailedCount)}</td>")
-                  .Append($"<td class=\"num {HitClass(h.HitRatePct)}\">{h.HitRatePct:F0}%</td>")
-                  .Append($"<td class=\"num\">{h.AvgDurationMs:F0}</td>")
-                  .Append($"<td class=\"num\">{N0(h.CacheRead)}</td>")
-                  .Append($"<td class=\"num\">{N0(h.CacheCreation)}</td>")
-                  .Append($"<td class=\"num\">{N0(h.InputUncached)}</td>")
-                  .Append($"<td class=\"num\">{N0(h.Output)}</td>")
+                  .Append($"<td class=\"num\">{N0(rowReq)}</td>")
+                  .Append($"<td class=\"num {(rowFailed > 0 ? "err" : "")}\">{N0(rowFailed)}</td>")
+                  .Append($"<td class=\"num {HitClass(rowHitPct)}\">{rowHitPct:F0}%</td>")
+                  .Append($"<td class=\"num\">{rowAvgMs:F0}</td>")
+                  .Append($"<td class=\"num\">{N0(rowRead)}</td>")
+                  .Append($"<td class=\"num\">{N0(rowCc5m + rowCc1h)}</td>")
+                  .Append($"<td class=\"num\">{N0(rowUncached)}</td>")
+                  .Append($"<td class=\"num\">{N0(rowOutput)}</td>")
                   .Append($"<td class=\"num cost\">{Money(hourCost)}</td></tr>");
             }
             sb.Append("</table>");
             sb.Append("<p class=\"muted\">* hourly cost uses today's by-model token mix as a blended rate; per-hour exact cost would require per-model hourly tracking.</p>");
         }
 
-        sb.Append("<footer><a href=\"/stats.json\">raw JSON</a></footer>");
+        sb.Append($"<footer><a href=\"/stats.json\">raw JSON</a> <span style=\"color:#555\">v{Esc(version)}</span></footer>");
         sb.Append("</body></html>");
         return sb.ToString();
     }
 
-    public static string RenderRange(IReadOnlyList<StatsSnapshot> snapshots, PricingCatalog pricing, string title)
+    public static string RenderRange(IReadOnlyList<StatsSnapshot> snapshots, PricingCatalog pricing, string title,
+        string currentPath, string version, string? provider = null)
     {
         var sb = new StringBuilder(8192);
 
         long totalRequests = 0, totalFailed = 0;
         long totalUncached = 0, totalRead = 0, totalCc5m = 0, totalCc1h = 0, totalOutput = 0;
         var mergedModels = new Dictionary<string, (long req, long failed, long uncached, long read, long cc5m, long cc1h, long output)>();
+        var modelNames = new Dictionary<string, string>();        // composite key -> bare model name
+        var modelProviders = new Dictionary<string, string?>();   // composite key -> provider
+        var mergedEndpoints = new Dictionary<string, (long req, long failed)>();
+        var endpointProviders = new Dictionary<string, string?>();
         decimal totalCost = 0m;
 
+        // Costs accumulate per snapshot so each day is priced with the rates in effect on that day.
+        var mergedCosts = new Dictionary<string, decimal>();
         foreach (var s in snapshots)
         {
-            totalRequests += s.RequestCount;
-            totalFailed   += s.FailedCount;
-            totalUncached += s.Totals.InputUncached;
-            totalRead     += s.Totals.CacheRead;
-            totalCc5m     += s.Totals.CacheCreation5m;
-            totalCc1h     += s.Totals.CacheCreation1h;
-            totalOutput   += s.Totals.Output;
-
-            foreach (var (model, m) in s.ByModel)
+            var fm = FilteredModels(s, provider);
+            var snapshotDate = SnapshotDate(s);
+            foreach (var (key, m) in fm)
             {
-                var cur = mergedModels.GetValueOrDefault(model);
-                mergedModels[model] = (cur.req + m.Requests, cur.failed + m.Failed,
+                var modelName = m.Model ?? key;
+                totalRequests += m.Requests;
+                totalFailed   += m.Failed;
+                totalUncached += m.InputUncached;
+                totalRead     += m.CacheRead;
+                totalCc5m     += m.CacheCreation5m;
+                totalCc1h     += m.CacheCreation1h;
+                totalOutput   += m.Output;
+                var cur = mergedModels.GetValueOrDefault(key);
+                mergedModels[key] = (cur.req + m.Requests, cur.failed + m.Failed,
                     cur.uncached + m.InputUncached, cur.read + m.CacheRead,
                     cur.cc5m + m.CacheCreation5m, cur.cc1h + m.CacheCreation1h,
                     cur.output + m.Output);
+                modelNames[key] = modelName;
+                modelProviders[key] = m.Provider;
+                var cost = pricing.CalculateCostUsd(modelName, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output, snapshotDate);
+                mergedCosts[key] = mergedCosts.GetValueOrDefault(key) + cost;
+                totalCost += cost;
             }
-
-            foreach (var (model, m) in s.ByModel)
-                totalCost += pricing.CalculateCostUsd(model, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output);
+            foreach (var (url, ep) in s.ByEndpoint)
+            {
+                if (provider is not null && ep.Provider != provider) continue;
+                var cur = mergedEndpoints.GetValueOrDefault(url);
+                mergedEndpoints[url] = (cur.req + ep.Requests, cur.failed + ep.Failed);
+                if (!endpointProviders.ContainsKey(url) || endpointProviders[url] is null)
+                    endpointProviders[url] = ep.Provider;
+            }
         }
 
         var totalIn = totalUncached + totalRead + totalCc5m + totalCc1h;
@@ -232,6 +317,12 @@ internal static class StatsHtmlRenderer
             .failure-warn { display: flex; align-items: center; gap: 1rem; background: #2d1010; border: 1px solid #e05252; border-radius: 4px; padding: .5rem .75rem; margin: .75rem 0; color: #e05252; font-size: .9rem; }
             .failure-warn > span { flex: 1; min-width: 0; }
             .dismiss-btn { flex-shrink: 0; background: #3a3a3a; border: 1px solid #555; color: #ccc; border-radius: 3px; padding: .15rem .6rem; font-size: .82rem; cursor: pointer; white-space: nowrap; }
+            nav { display: flex; align-items: baseline; justify-content: space-between; }
+            .nav-left { display: inline; }
+            .nav-right { display: flex; gap: .4rem; align-items: center; }
+            .prov-btn { color: #9ab; text-decoration: none; margin-right: 0; padding: .1rem .45rem; border: 1px solid #333; border-radius: 3px; font-size: .85rem; }
+            .prov-btn:hover { border-color: #555; text-decoration: none; }
+            .prov-active { color: #fff; border-color: #555; background: #2d2d2d; }
             </style>
             </head><body>
             """);
@@ -247,10 +338,13 @@ internal static class StatsHtmlRenderer
             .ToDictionary(m => m, m => snapshots.Sum(s => s.AcknowledgedFailures.GetValueOrDefault(m)));
         var aggregatedUnknownPaths = snapshots.SelectMany(s => s.UnknownPaths).Distinct().ToList();
         AppendFailureBanners(sb, aggregatedFailures, aggregatedAcknowledged, aggregatedUnknownPaths);
-        sb.Append("<nav>");
-        sb.Append("<a href=\"/stats\">Today</a><span class=\"sep\">|</span>");
-        sb.Append("<a href=\"/stats/week\">Week</a><span class=\"sep\">|</span>");
-        sb.Append("<a href=\"/stats/month\">Month</a>");
+        var provQ = provider is not null ? $"?provider={provider}" : "";
+        sb.Append("<nav><span class=\"nav-left\">");
+        sb.Append($"<a href=\"/stats{provQ}\">Today</a><span class=\"sep\">|</span>");
+        sb.Append($"<a href=\"/stats/week{provQ}\">Week</a><span class=\"sep\">|</span>");
+        sb.Append($"<a href=\"/stats/month{provQ}\">Month</a>");
+        sb.Append("</span>");
+        AppendProviderButtons(sb, currentPath, provider);
         sb.Append("</nav>");
 
         sb.Append("<h2>Totals</h2>");
@@ -271,18 +365,33 @@ internal static class StatsHtmlRenderer
             sb.Append("<table><tr><th>date</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">hit %</th><th class=\"num\">avg ms</th><th class=\"num\">tokens in</th><th class=\"num\">output</th><th class=\"num\">cost</th></tr>");
             foreach (var s in snapshots.OrderByDescending(x => x.Date))
             {
-                var dayIn   = s.Totals.InputUncached + s.Totals.CacheRead + s.Totals.CacheCreation;
-                var dayCost = s.ByModel.Sum(kvp =>
-                    pricing.CalculateCostUsd(kvp.Key, kvp.Value.InputUncached, kvp.Value.CacheRead, kvp.Value.CacheCreation5m, kvp.Value.CacheCreation1h, kvp.Value.Output));
+                var dayFm = FilteredModels(s, provider);
+                var dayDate = SnapshotDate(s);
+                long dayReq = 0, dayFailed = 0, dayUncached = 0, dayRead = 0, dayCc5m = 0, dayCc1h = 0, dayOutput = 0;
+                decimal dayCost = 0m;
+                foreach (var (key, m) in dayFm)
+                {
+                    var modelName = m.Model ?? key;
+                    dayReq     += m.Requests;
+                    dayFailed  += m.Failed;
+                    dayUncached += m.InputUncached;
+                    dayRead    += m.CacheRead;
+                    dayCc5m    += m.CacheCreation5m;
+                    dayCc1h    += m.CacheCreation1h;
+                    dayOutput  += m.Output;
+                    dayCost    += pricing.CalculateCostUsd(modelName, m.InputUncached, m.CacheRead, m.CacheCreation5m, m.CacheCreation1h, m.Output, dayDate);
+                }
+                var dayIn   = dayUncached + dayRead + dayCc5m + dayCc1h;
+                var dayHit  = dayIn > 0 ? 100.0 * dayRead / dayIn : 0;
                 var isToday = s.UptimeSeconds >= 0;
-                var dateLink = isToday ? "/stats" : $"/stats/{s.Date}";
+                var dateLink = isToday ? $"/stats{provQ}" : $"/stats/{s.Date}{provQ}";
                 sb.Append($"<tr><td class=\"date mono\"><a href=\"{dateLink}\">{Esc(s.Date)}</a>{(isToday ? " <span class=\"muted\">(live)</span>" : "")}</td>")
-                  .Append($"<td class=\"num\">{N0(s.RequestCount)}</td>")
-                  .Append($"<td class=\"num {(s.FailedCount > 0 ? "err" : "")}\">{N0(s.FailedCount)}</td>")
-                  .Append($"<td class=\"num {HitClass(s.HitRatePct)}\">{s.HitRatePct:F0}%</td>")
+                  .Append($"<td class=\"num\">{N0(dayReq)}</td>")
+                  .Append($"<td class=\"num {(dayFailed > 0 ? "err" : "")}\">{N0(dayFailed)}</td>")
+                  .Append($"<td class=\"num {HitClass(dayHit)}\">{dayHit:F0}%</td>")
                   .Append($"<td class=\"num\">{s.AvgDurationMs:F0}</td>")
                   .Append($"<td class=\"num\">{N0(dayIn)}</td>")
-                  .Append($"<td class=\"num\">{N0(s.Totals.Output)}</td>")
+                  .Append($"<td class=\"num\">{N0(dayOutput)}</td>")
                   .Append($"<td class=\"num cost\">{Money(dayCost)}</td></tr>");
             }
             sb.Append("</table>");
@@ -292,13 +401,17 @@ internal static class StatsHtmlRenderer
         {
             sb.Append("<h2>By model</h2>");
             sb.Append("<table><tr><th>model</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">hit %</th><th class=\"num\">cache read</th><th class=\"num\">cache create</th><th class=\"num\">uncached</th><th class=\"num\">output</th><th class=\"num\">cost</th></tr>");
-            foreach (var (model, m) in mergedModels.OrderBy(x => x.Key))
+            foreach (var (key, m) in mergedModels.OrderBy(x => modelNames[x.Key]).ThenBy(x => modelProviders[x.Key]))
             {
+                var modelName = modelNames[key];
+                var providerSuffix = provider is null && modelProviders[key] is not null
+                    ? $" <span class=\"muted\">({Esc(modelProviders[key]!)})</span>"
+                    : "";
                 var mCc = m.cc5m + m.cc1h;
                 var mTotal = m.uncached + m.read + mCc;
                 var mHit = mTotal > 0 ? 100.0 * m.read / mTotal : 0;
-                var mCost = pricing.CalculateCostUsd(model, m.uncached, m.read, m.cc5m, m.cc1h, m.output);
-                sb.Append($"<tr><td class=\"mono\">{Esc(model)}</td>")
+                var mCost = mergedCosts.GetValueOrDefault(key);
+                sb.Append($"<tr><td class=\"mono\">{Esc(modelName)}{providerSuffix}</td>")
                   .Append($"<td class=\"num\">{N0(m.req)}</td>")
                   .Append($"<td class=\"num {(m.failed > 0 ? "err" : "")}\">{N0(m.failed)}</td>")
                   .Append($"<td class=\"num {HitClass(mHit)}\">{mHit:F0}%</td>")
@@ -311,26 +424,75 @@ internal static class StatsHtmlRenderer
             sb.Append("</table>");
         }
 
-        sb.Append("<footer><a href=\"/stats\">Today</a> &middot; <a href=\"/stats/week\">Week</a> &middot; <a href=\"/stats/month\">Month</a></footer>");
+        if (mergedEndpoints.Count > 0)
+        {
+            sb.Append("<h2>Endpoint routing</h2>");
+            if (provider is null)
+                sb.Append("<table><tr><th>provider</th><th>endpoint</th><th class=\"num\">requests</th><th class=\"num\">failed</th></tr>");
+            else
+                sb.Append("<table><tr><th>endpoint</th><th class=\"num\">requests</th><th class=\"num\">failed</th></tr>");
+            foreach (var (url, ep) in mergedEndpoints
+                .OrderBy(x => endpointProviders[x.Key])
+                .ThenBy(x => x.Key))
+            {
+                if (provider is null)
+                    sb.Append($"<tr><td>{(endpointProviders[url] is not null ? Esc(endpointProviders[url]!) : "&mdash;")}</td>")
+                      .Append($"<td class=\"mono\">{Esc(url)}</td>")
+                      .Append($"<td class=\"num\">{N0(ep.req)}</td>")
+                      .Append($"<td class=\"num {(ep.failed > 0 ? "err" : "")}\">{N0(ep.failed)}</td></tr>");
+                else
+                    sb.Append($"<tr><td class=\"mono\">{Esc(url)}</td>")
+                      .Append($"<td class=\"num\">{N0(ep.req)}</td>")
+                      .Append($"<td class=\"num {(ep.failed > 0 ? "err" : "")}\">{N0(ep.failed)}</td></tr>");
+            }
+            sb.Append("</table>");
+        }
+
+        sb.Append($"<footer><a href=\"/stats\">Today</a> &middot; <a href=\"/stats/week\">Week</a> &middot; <a href=\"/stats/month\">Month</a> <span style=\"color:#555\">v{Esc(version)}</span></footer>");
         sb.Append("</body></html>");
         return sb.ToString();
     }
 
-    private static PricingCatalog.RateBlock? ComputeBlendedRates(StatsSnapshot s, PricingCatalog pricing)
+    private static IReadOnlyDictionary<string, ModelSnapshot> FilteredModels(StatsSnapshot s, string? provider) =>
+        provider is null
+            ? s.ByModel
+            : s.ByModel
+                .Where(kvp => kvp.Value.Provider == provider)
+                .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+    private static void AppendProviderButtons(StringBuilder sb, string basePath, string? activeProvider)
+    {
+        sb.Append("<span class=\"nav-right\">");
+        foreach (var (label, value) in new[] { ("All", (string?)null), ("Vertex", "vertex"), ("Anthropic", "anthropic") })
+        {
+            var isActive = activeProvider == value;
+            var href = value is null ? basePath : $"{basePath}?provider={value}";
+            var cls = isActive ? "prov-btn prov-active" : "prov-btn";
+            sb.Append($"<a href=\"{href}\" class=\"{cls}\">{label}</a>");
+        }
+        sb.Append("</span>");
+    }
+
+    private static DateOnly? SnapshotDate(StatsSnapshot s) =>
+        DateOnly.TryParseExact(s.Date, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d)
+            ? d : null;
+
+    private static PricingCatalog.RateBlock? ComputeBlendedRates(IReadOnlyDictionary<string, ModelSnapshot> models, PricingCatalog pricing, DateOnly? onDate)
     {
         // Models without pricing entries bias blended cost downward; acceptable since only count-tokens lacks pricing.
         long totIn = 0, totRead = 0, tot5m = 0, tot1h = 0, totOut = 0;
         decimal weightedIn = 0, weightedRead = 0, weighted5m = 0, weighted1h = 0, weightedOut = 0;
 
-        foreach (var (model, m) in s.ByModel)
+        foreach (var (key, m) in models)
         {
+            var modelName = m.Model ?? key;
             totIn += m.InputUncached;
             totRead += m.CacheRead;
             tot5m += m.CacheCreation5m;
             tot1h += m.CacheCreation1h;
             totOut += m.Output;
 
-            if (!pricing.TryGetRates(model, out var r)) continue;
+            if (!pricing.TryGetRates(modelName, out var r, onDate)) continue;
             weightedIn += m.InputUncached * r.Input;
             weightedRead += m.CacheRead * r.CacheHit;
             weighted5m += m.CacheCreation5m * r.CacheWrite5m;

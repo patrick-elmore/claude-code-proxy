@@ -26,6 +26,7 @@ public sealed class StatsTracker
     private readonly HashSet<string> _unknownPaths = new();
     private const int MaxUnknownPaths = 20;
     private readonly Dictionary<string, ModelBucket> _byModel = new();
+    private readonly Dictionary<string, EndpointBucket> _byEndpoint = new();
     private readonly ConcurrentDictionary<DateTimeOffset, HourlyBucket> _hourly = new();
 
     private static readonly JsonSerializerOptions WriteOpts = new()
@@ -60,7 +61,7 @@ public sealed class StatsTracker
 
             if (stats.Model is not null)
             {
-                var mb = GetOrAddModel(stats.Model);
+                var mb = GetOrAddModel(stats.Model, stats.Provider);
                 mb.Requests++;
                 mb.InputUncached += stats.InputUncached;
                 mb.CacheRead += stats.CacheRead;
@@ -68,6 +69,13 @@ public sealed class StatsTracker
                 mb.CacheCreation1h += stats.CacheCreation1h;
                 mb.Output += stats.OutputTokens;
                 mb.TotalDurationMs += stats.DurationMs;
+            }
+
+            if (stats.UpstreamBaseUrl is not null)
+            {
+                if (!_byEndpoint.TryGetValue(stats.UpstreamBaseUrl, out var eb))
+                    _byEndpoint[stats.UpstreamBaseUrl] = eb = new EndpointBucket { Provider = stats.Provider };
+                eb.Requests++;
             }
 
             var bucket = _hourly.GetOrAdd(TruncateToHour(DateTimeOffset.Now), _ => new HourlyBucket());
@@ -78,6 +86,19 @@ public sealed class StatsTracker
             bucket.CacheCreation1h += stats.CacheCreation1h;
             bucket.Output += stats.OutputTokens;
             bucket.TotalDurationMs += stats.DurationMs;
+
+            if (stats.Provider is not null)
+            {
+                if (!bucket.ByProvider.TryGetValue(stats.Provider, out var pb))
+                    bucket.ByProvider[stats.Provider] = pb = new ProviderHourlyBucket();
+                pb.Requests++;
+                pb.InputUncached   += stats.InputUncached;
+                pb.CacheRead       += stats.CacheRead;
+                pb.CacheCreation5m += stats.CacheCreation5m;
+                pb.CacheCreation1h += stats.CacheCreation1h;
+                pb.Output          += stats.OutputTokens;
+                pb.TotalDurationMs += stats.DurationMs;
+            }
 
             PersistToDisk();
         }
@@ -94,14 +115,29 @@ public sealed class StatsTracker
 
             if (stats.Model is not null)
             {
-                var mb = GetOrAddModel(stats.Model);
+                var mb = GetOrAddModel(stats.Model, stats.Provider);
                 mb.Failed++;
                 mb.TotalDurationMs += stats.DurationMs;
+            }
+
+            if (stats.UpstreamBaseUrl is not null)
+            {
+                if (!_byEndpoint.TryGetValue(stats.UpstreamBaseUrl, out var eb))
+                    _byEndpoint[stats.UpstreamBaseUrl] = eb = new EndpointBucket { Provider = stats.Provider };
+                eb.Failed++;
             }
 
             var bucket = _hourly.GetOrAdd(TruncateToHour(DateTimeOffset.Now), _ => new HourlyBucket());
             bucket.FailedCount++;
             bucket.TotalDurationMs += stats.DurationMs;
+
+            if (stats.Provider is not null)
+            {
+                if (!bucket.ByProvider.TryGetValue(stats.Provider, out var pb))
+                    bucket.ByProvider[stats.Provider] = pb = new ProviderHourlyBucket();
+                pb.FailedCount++;
+                pb.TotalDurationMs += stats.DurationMs;
+            }
 
             PersistToDisk();
         }
@@ -166,7 +202,7 @@ public sealed class StatsTracker
                         var mHit = mTotal > 0 ? 100.0 * mb.CacheRead / mTotal : 0;
                         var mReqs = mb.Requests + mb.Failed;
                         var mAvg = mReqs > 0 ? (double)mb.TotalDurationMs / mReqs : 0;
-                        return new ModelSnapshot(mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead, mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(mHit, 1), Math.Round(mAvg, 0));
+                        return new ModelSnapshot(mb.Model, mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead, mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(mHit, 1), Math.Round(mAvg, 0), mb.Provider);
                     }),
                 Hourly: file.Hourly
                     .OrderByDescending(h => h.Hour)
@@ -177,9 +213,44 @@ public sealed class StatsTracker
                         var hourHit = totalHourIn > 0 ? 100.0 * h.CacheRead / totalHourIn : 0;
                         var hourReqs = h.Requests + h.FailedCount;
                         var hourAvg = hourReqs > 0 ? (double)h.TotalDurationMs / hourReqs : 0;
-                        return new HourlyStats(h.Hour, h.Requests, h.FailedCount, Math.Round(hourHit, 1), Math.Round(hourAvg, 0), h.CacheRead, h.CacheCreation5m, h.CacheCreation1h, h.InputUncached, h.Output);
+                        return new HourlyStats(h.Hour, h.Requests, h.FailedCount, Math.Round(hourHit, 1),
+                            Math.Round(hourAvg, 0), h.CacheRead, h.CacheCreation5m, h.CacheCreation1h,
+                            h.InputUncached, h.Output,
+                            ByProvider: h.ByProvider is { Count: > 0 }
+                                ? h.ByProvider.ToDictionary(
+                                      x => x.Key,
+                                      x =>
+                                      {
+                                          var pCc = x.Value.CacheCreation5m + x.Value.CacheCreation1h;
+                                          var pTotal = x.Value.InputUncached + x.Value.CacheRead + pCc;
+                                          var pHit = pTotal > 0 ? 100.0 * x.Value.CacheRead / pTotal : 0;
+                                          var pReqs = x.Value.Requests + x.Value.FailedCount;
+                                          var pAvg = pReqs > 0 ? (double)x.Value.TotalDurationMs / pReqs : 0;
+                                          return new ProviderHourlyStats(x.Value.Requests, x.Value.FailedCount,
+                                              x.Value.InputUncached, x.Value.CacheRead, x.Value.CacheCreation5m,
+                                              x.Value.CacheCreation1h, x.Value.Output,
+                                              Math.Round(pHit, 1), Math.Round(pAvg, 0));
+                                      })
+                                : null);
                     })
-                    .ToList()
+                    .ToList(),
+                ByProvider: file.ByModel
+                    .Where(kvp => kvp.Value.Provider is not null)
+                    .GroupBy(kvp => kvp.Value.Provider!)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new ProviderTotals(
+                            Requests:       g.Sum(x => x.Value.Requests),
+                            Failed:         g.Sum(x => x.Value.Failed),
+                            InputUncached:  g.Sum(x => x.Value.InputUncached),
+                            CacheRead:      g.Sum(x => x.Value.CacheRead),
+                            CacheCreation5m: g.Sum(x => x.Value.CacheCreation5m),
+                            CacheCreation1h: g.Sum(x => x.Value.CacheCreation1h),
+                            Output:         g.Sum(x => x.Value.Output)
+                        )),
+                ByEndpoint: (file.ByEndpoint ?? []).ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider))
             );
         }
         catch (Exception ex)
@@ -236,7 +307,7 @@ public sealed class StatsTracker
                         var mHit = mTotal > 0 ? 100.0 * mb.CacheRead / mTotal : 0;
                         var mReqs = mb.Requests + mb.Failed;
                         var mAvg = mReqs > 0 ? (double)mb.TotalDurationMs / mReqs : 0;
-                        return new ModelSnapshot(mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead, mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(mHit, 1), Math.Round(mAvg, 0));
+                        return new ModelSnapshot(mb.Model, mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead, mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(mHit, 1), Math.Round(mAvg, 0), mb.Provider);
                     }),
                 Hourly: _hourly
                     .OrderByDescending(kvp => kvp.Key)
@@ -258,10 +329,43 @@ public sealed class StatsTracker
                             CacheCreation5m: b.CacheCreation5m,
                             CacheCreation1h: b.CacheCreation1h,
                             InputUncached: b.InputUncached,
-                            Output: b.Output
+                            Output: b.Output,
+                            ByProvider: b.ByProvider.Count > 0
+                                ? b.ByProvider.ToDictionary(
+                                      x => x.Key,
+                                      x =>
+                                      {
+                                          var pCc = x.Value.CacheCreation5m + x.Value.CacheCreation1h;
+                                          var pTotal = x.Value.InputUncached + x.Value.CacheRead + pCc;
+                                          var pHit = pTotal > 0 ? 100.0 * x.Value.CacheRead / pTotal : 0;
+                                          var pReqs = x.Value.Requests + x.Value.FailedCount;
+                                          var pAvg = pReqs > 0 ? (double)x.Value.TotalDurationMs / pReqs : 0;
+                                          return new ProviderHourlyStats(x.Value.Requests, x.Value.FailedCount,
+                                              x.Value.InputUncached, x.Value.CacheRead, x.Value.CacheCreation5m,
+                                              x.Value.CacheCreation1h, x.Value.Output,
+                                              Math.Round(pHit, 1), Math.Round(pAvg, 0));
+                                      })
+                                : null
                         );
                     })
-                    .ToList()
+                    .ToList(),
+                ByProvider: _byModel
+                    .Where(kvp => kvp.Value.Provider is not null)
+                    .GroupBy(kvp => kvp.Value.Provider!)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => new ProviderTotals(
+                            Requests:       g.Sum(x => x.Value.Requests),
+                            Failed:         g.Sum(x => x.Value.Failed),
+                            InputUncached:  g.Sum(x => x.Value.InputUncached),
+                            CacheRead:      g.Sum(x => x.Value.CacheRead),
+                            CacheCreation5m: g.Sum(x => x.Value.CacheCreation5m),
+                            CacheCreation1h: g.Sum(x => x.Value.CacheCreation1h),
+                            Output:         g.Sum(x => x.Value.Output)
+                        )),
+                ByEndpoint: _byEndpoint.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider))
             );
         }
     }
@@ -303,10 +407,11 @@ public sealed class StatsTracker
     private static Dictionary<PromptFailureMode, long> InitFailures() =>
         Enum.GetValues<PromptFailureMode>().ToDictionary(m => m, _ => 0L);
 
-    private ModelBucket GetOrAddModel(string model)
+    private ModelBucket GetOrAddModel(string model, string? provider)
     {
-        if (!_byModel.TryGetValue(model, out var mb))
-            _byModel[model] = mb = new ModelBucket();
+        var key = $"{provider}|{model}";
+        if (!_byModel.TryGetValue(key, out var mb))
+            _byModel[key] = mb = new ModelBucket { Model = model, Provider = provider };
         return mb;
     }
 
@@ -330,6 +435,7 @@ public sealed class StatsTracker
         foreach (var mode in Enum.GetValues<PromptFailureMode>()) _acknowledgedFailures[mode] = 0;
         _unknownPaths.Clear();
         _byModel.Clear();
+        _byEndpoint.Clear();
         _hourly.Clear();
     }
 
@@ -389,22 +495,40 @@ public sealed class StatsTracker
             if (snapshot.StartedAt != default)
                 _startedAt = snapshot.StartedAt;
 
+            // Pre-fix files use bare-model keys; they load as-is and render unattributed. New traffic
+            // re-keys by "{provider}|{model}". The two coexist for the current day; rollover clears it.
             foreach (var (model, mb) in snapshot.ByModel)
                 _byModel[model] = mb;
 
+            foreach (var (url, eb) in snapshot.ByEndpoint ?? [])
+                _byEndpoint[url] = eb;
+
             foreach (var h in snapshot.Hourly)
             {
-                _hourly[h.Hour] = new HourlyBucket
+                var hb = new HourlyBucket
                 {
-                    Requests = h.Requests,
-                    FailedCount = h.FailedCount,
-                    InputUncached = h.InputUncached,
-                    CacheRead = h.CacheRead,
+                    Requests        = h.Requests,
+                    FailedCount     = h.FailedCount,
+                    InputUncached   = h.InputUncached,
+                    CacheRead       = h.CacheRead,
                     CacheCreation5m = h.CacheCreation5m,
                     CacheCreation1h = h.CacheCreation1h,
-                    Output = h.Output,
+                    Output          = h.Output,
                     TotalDurationMs = h.TotalDurationMs,
                 };
+                foreach (var (prov, pfe) in h.ByProvider ?? [])
+                    hb.ByProvider[prov] = new ProviderHourlyBucket
+                    {
+                        Requests        = pfe.Requests,
+                        FailedCount     = pfe.FailedCount,
+                        InputUncached   = pfe.InputUncached,
+                        CacheRead       = pfe.CacheRead,
+                        CacheCreation5m = pfe.CacheCreation5m,
+                        CacheCreation1h = pfe.CacheCreation1h,
+                        Output          = pfe.Output,
+                        TotalDurationMs = pfe.TotalDurationMs,
+                    };
+                _hourly[h.Hour] = hb;
             }
 
             _logger.LogInformation("Loaded stats from disk: {Requests} requests for {Date}", _requestCount, _currentDate);
@@ -445,10 +569,20 @@ public sealed class StatsTracker
             .Select(kvp =>
             {
                 var b = kvp.Value;
-                return new HourlyFileEntry(kvp.Key, b.Requests, b.FailedCount, b.InputUncached, b.CacheRead, b.CacheCreation5m, b.CacheCreation1h, b.Output, b.TotalDurationMs);
+                return new HourlyFileEntry(
+                    kvp.Key, b.Requests, b.FailedCount, b.InputUncached, b.CacheRead,
+                    b.CacheCreation5m, b.CacheCreation1h, b.Output, b.TotalDurationMs,
+                    ByProvider: b.ByProvider.Count > 0
+                        ? b.ByProvider.ToDictionary(
+                              x => x.Key,
+                              x => new ProviderHourlyFileEntry(x.Value.Requests, x.Value.FailedCount, x.Value.InputUncached,
+                                  x.Value.CacheRead, x.Value.CacheCreation5m, x.Value.CacheCreation1h, x.Value.Output,
+                                  x.Value.TotalDurationMs))
+                        : null);
             })
             .OrderByDescending(h => h.Hour)
-            .ToList()
+            .ToList(),
+        ByEndpoint: new Dictionary<string, EndpointBucket>(_byEndpoint)
     );
 
     private string FilePath(DateOnly date) =>
@@ -468,7 +602,8 @@ public sealed class StatsTracker
         Dictionary<string, long> AcknowledgedFailures,
         List<string> UnknownPaths,
         Dictionary<string, ModelBucket> ByModel,
-        List<HourlyFileEntry> Hourly
+        List<HourlyFileEntry> Hourly,
+        Dictionary<string, EndpointBucket>? ByEndpoint
     );
 
     private sealed record HourlyFileEntry(
@@ -480,8 +615,27 @@ public sealed class StatsTracker
         long CacheCreation5m,
         long CacheCreation1h,
         long Output,
+        long TotalDurationMs,
+        Dictionary<string, ProviderHourlyFileEntry>? ByProvider = null
+    );
+
+    private sealed record ProviderHourlyFileEntry(
+        long Requests,
+        long FailedCount,
+        long InputUncached,
+        long CacheRead,
+        long CacheCreation5m,
+        long CacheCreation1h,
+        long Output,
         long TotalDurationMs
     );
+
+    private sealed class EndpointBucket
+    {
+        public long Requests { get; set; }
+        public long Failed { get; set; }
+        public string? Provider { get; set; }
+    }
 
     private sealed class ModelBucket
     {
@@ -493,9 +647,24 @@ public sealed class StatsTracker
         public long CacheCreation1h { get; set; }
         public long Output { get; set; }
         public long TotalDurationMs { get; set; }
+        public string? Model { get; set; }
+        public string? Provider { get; set; }
     }
 
     private sealed class HourlyBucket
+    {
+        public long Requests { get; set; }
+        public long FailedCount { get; set; }
+        public long InputUncached { get; set; }
+        public long CacheRead { get; set; }
+        public long CacheCreation5m { get; set; }
+        public long CacheCreation1h { get; set; }
+        public long Output { get; set; }
+        public long TotalDurationMs { get; set; }
+        public Dictionary<string, ProviderHourlyBucket> ByProvider { get; } = new();
+    }
+
+    private sealed class ProviderHourlyBucket
     {
         public long Requests { get; set; }
         public long FailedCount { get; set; }
@@ -521,7 +690,9 @@ public sealed record StatsSnapshot(
     IReadOnlyDictionary<PromptFailureMode, long> AcknowledgedFailures,
     IReadOnlyList<string> UnknownPaths,
     IReadOnlyDictionary<string, ModelSnapshot> ByModel,
-    IReadOnlyList<HourlyStats> Hourly
+    IReadOnlyList<HourlyStats> Hourly,
+    IReadOnlyDictionary<string, ProviderTotals> ByProvider,
+    IReadOnlyDictionary<string, EndpointSnapshot> ByEndpoint
 );
 
 public sealed record TokenTotals(
@@ -536,6 +707,7 @@ public sealed record TokenTotals(
 }
 
 public sealed record ModelSnapshot(
+    string? Model,
     long Requests,
     long Failed,
     long InputUncached,
@@ -544,7 +716,8 @@ public sealed record ModelSnapshot(
     long CacheCreation1h,
     long Output,
     double HitRatePct,
-    double AvgDurationMs
+    double AvgDurationMs,
+    string? Provider
 )
 {
     public long CacheCreation => CacheCreation5m + CacheCreation1h;
@@ -560,8 +733,39 @@ public sealed record HourlyStats(
     long CacheCreation5m,
     long CacheCreation1h,
     long InputUncached,
+    long Output,
+    IReadOnlyDictionary<string, ProviderHourlyStats>? ByProvider = null
+)
+{
+    public long CacheCreation => CacheCreation5m + CacheCreation1h;
+}
+
+public sealed record ProviderHourlyStats(
+    long Requests,
+    long FailedCount,
+    long InputUncached,
+    long CacheRead,
+    long CacheCreation5m,
+    long CacheCreation1h,
+    long Output,
+    double HitRatePct,
+    double AvgDurationMs
+)
+{
+    public long CacheCreation => CacheCreation5m + CacheCreation1h;
+}
+
+public sealed record ProviderTotals(
+    long Requests,
+    long Failed,
+    long InputUncached,
+    long CacheRead,
+    long CacheCreation5m,
+    long CacheCreation1h,
     long Output
 )
 {
     public long CacheCreation => CacheCreation5m + CacheCreation1h;
 }
+
+public sealed record EndpointSnapshot(long Requests, long Failed, string? Provider);

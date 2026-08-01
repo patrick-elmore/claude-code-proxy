@@ -6,6 +6,9 @@ using ClaudeCodeProxy;
 using Microsoft.Extensions.Options;
 using Serilog;
 
+const string ProviderVertex    = "vertex";
+const string ProviderAnthropic = "anthropic";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseWindowsService(options =>
@@ -24,6 +27,7 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.Configure<ProxyOptions>(builder.Configuration.GetSection("Proxy"));
 builder.Services.Configure<DumpOptions>(builder.Configuration.GetSection("Dump"));
 builder.Services.Configure<StatsOptions>(builder.Configuration.GetSection("Stats"));
+builder.Services.Configure<HeaderDumpOptions>(builder.Configuration.GetSection("HeaderDump"));
 
 builder.Services.AddHttpClient("vertex", client =>
 {
@@ -32,11 +36,18 @@ builder.Services.AddHttpClient("vertex", client =>
 
 builder.Services.AddSingleton<PromptRewriter>();
 builder.Services.AddSingleton<RequestDumper>();
+builder.Services.AddSingleton<HeaderDumper>();
 builder.Services.AddSingleton<PricingCatalog>();
 builder.Services.AddSingleton<StatsTracker>();
 builder.Services.AddSingleton<UsageLogger>();
 
 var app = builder.Build();
+
+var version = (System.Reflection.AssemblyInformationalVersionAttribute?)
+    Attribute.GetCustomAttribute(
+        typeof(Program).Assembly,
+        typeof(System.Reflection.AssemblyInformationalVersionAttribute))
+    is { } infoAttr ? infoAttr.InformationalVersion : "unknown";
 
 // Read favicon from wwwroot/favicon.svg once at startup; serve explicitly to avoid static-file MIME/path issues.
 var faviconPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "favicon.svg");
@@ -56,24 +67,26 @@ app.MapPost("/stats/dismiss/{mode}", (string mode, StatsTracker st) =>
     return Results.Redirect("/stats");
 });
 
-app.MapGet("/stats", (StatsTracker st, PricingCatalog pricing) =>
+app.MapGet("/stats", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
 {
+    var provider = ParseProvider(ctx);
     var today = DateOnly.FromDateTime(DateTime.Now);
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), today, today);
-    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, prev, next), "text/html; charset=utf-8");
+    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, version, prev, next, provider), "text/html; charset=utf-8");
 });
 
 app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
 
-app.MapGet("/stats/{date}", (string date, StatsTracker st, PricingCatalog pricing) =>
+app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
 {
     if (!DateOnly.TryParseExact(date, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d))
         return Results.BadRequest("Date must be yyyy-MM-dd.");
     var snapshot = st.GetSnapshotForDate(d);
     if (snapshot is null) return Results.NotFound($"No stats for {date}.");
+    var provider = ParseProvider(ctx);
     var today = DateOnly.FromDateTime(DateTime.Now);
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), d, today);
-    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, prev, next), "text/html; charset=utf-8");
+    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, version, prev, next, provider), "text/html; charset=utf-8");
 });
 
 app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
@@ -84,11 +97,13 @@ app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
     return snapshot is null ? Results.NotFound($"No stats for {date}.") : Results.Json(snapshot, statsJsonOptions);
 });
 
-app.MapGet("/stats/week", (StatsTracker st, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days"), "text/html; charset=utf-8"));
+app.MapGet("/stats/week", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days", "/stats/week", version, ParseProvider(ctx)), "text/html; charset=utf-8"));
 
-app.MapGet("/stats/month", (StatsTracker st, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days"), "text/html; charset=utf-8"));
+app.MapGet("/stats/month", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days", "/stats/month", version, ParseProvider(ctx)), "text/html; charset=utf-8"));
+
+app.MapGet("/internal/auth-token", () => Results.Text(AuthTokenStore.Value ?? string.Empty));
 
 // Mutation is body-shape-driven, not path-driven — any JSON body with a system[] is a candidate.
 app.Map("{**path}", async (
@@ -96,11 +111,21 @@ app.Map("{**path}", async (
     IHttpClientFactory httpClientFactory,
     PromptRewriter rewriter,
     RequestDumper dumper,
+    HeaderDumper headerDumper,
     UsageLogger usageLogger,
     StatsTracker st,
     IOptionsMonitor<ProxyOptions> proxyOpts,
     ILogger<Program> log) =>
 {
+    await headerDumper.DumpAsync(ctx.Request, ctx.RequestAborted);
+
+    if (ctx.Request.Headers.TryGetValue("Authorization", out var authHeaderValue))
+    {
+        var authValue = authHeaderValue.ToString();
+        if (authValue != AuthTokenStore.Value)
+            AuthTokenStore.Value = authValue;
+    }
+
     var requestPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
     var model = ExtractModel(requestPath);
     var hasBody = ctx.Request.ContentLength is > 0
@@ -122,68 +147,83 @@ app.Map("{**path}", async (
             await dumper.DumpAsync("original", null, originalBytes, requestPath, ctx.RequestAborted);
             forwardBytes = originalBytes;
         }
-        else if (model is null)
-        {
-            // Unknown path — not a model API call. Record and forward unchanged.
-            log.LogWarning("Request to unknown path {Path} — forwarding unchanged", requestPath);
-            st.RecordUnknownPath(requestPath);
-            await dumper.DumpFailureAsync("UnknownPath", originalBytes, requestPath, ctx.RequestAborted);
-            forwardBytes = originalBytes;
-        }
         else
         {
             try { node = JsonNode.Parse(originalBytes); }
             catch (JsonException) { /* not JSON — forward verbatim */ }
 
-            await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
+            // Anthropic-format paths (/v1/messages) carry the model in the body, not the URL.
+            if (node is not null && model is null)
+                model = node["model"]?.GetValue<string>();
 
-            if (node is not null)
+            if (model is null)
             {
-                RewriteOutcome outcome;
-                // Explicit bypass from direct SDK callers (e.g. second-brain) that set this header.
-                if (ctx.Request.Headers.ContainsKey("X-CC-Proxy-Bypass"))
-                {
-                    outcome = RewriteOutcome.NotApplicable;
-                }
-                else try
-                {
-                    outcome = await rewriter.RewriteAsync(node);
-                }
-                catch (Exception ex)
-                {
-                    log.LogWarning(ex, "Unexpected exception during prompt rewrite — passing through original request");
-                    outcome = RewriteOutcome.Failure(PromptFailureMode.UnhandledException);
-                }
+                // Unknown path — not a model API call. Record and forward unchanged.
+                log.LogWarning("Request to unknown path {Path} — forwarding unchanged", requestPath);
+                st.RecordUnknownPath(requestPath);
+                await dumper.DumpFailureAsync("UnknownPath", originalBytes, requestPath, ctx.RequestAborted);
+                forwardBytes = originalBytes;
+            }
+            else
+            {
+                await dumper.DumpAsync("original", node, originalBytes, requestPath, ctx.RequestAborted);
 
-                st.RecordRewriteOutcome(outcome);
-                var dumpMode = outcome.FailureMode?.ToString()
-                    ?? (outcome.IdentityNotRecognized ? "IdentityNotRecognized" : null);
-                if (dumpMode is not null)
-                    await dumper.DumpFailureAsync(dumpMode, originalBytes, requestPath, ctx.RequestAborted);
-                mutated = outcome.Mutated;
-                if (mutated)
+                if (node is not null)
                 {
-                    forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
-                    await dumper.DumpAsync("mutated", node, null, null, ctx.RequestAborted);
+                    RewriteOutcome outcome;
+                    // Explicit bypass from direct SDK callers (e.g. second-brain) that set this header.
+                    if (ctx.Request.Headers.ContainsKey("X-CC-Proxy-Bypass"))
+                    {
+                        outcome = RewriteOutcome.NotApplicable;
+                    }
+                    else try
+                    {
+                        outcome = await rewriter.RewriteAsync(node);
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogWarning(ex, "Unexpected exception during prompt rewrite — passing through original request");
+                        outcome = RewriteOutcome.Failure(PromptFailureMode.UnhandledException);
+                    }
+
+                    st.RecordRewriteOutcome(outcome);
+                    var dumpMode = outcome.FailureMode?.ToString()
+                        ?? (outcome.IdentityNotRecognized ? "IdentityNotRecognized" : null);
+                    if (dumpMode is not null)
+                        await dumper.DumpFailureAsync(dumpMode, originalBytes, requestPath, ctx.RequestAborted);
+                    mutated = outcome.Mutated;
+                    if (mutated)
+                    {
+                        forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
+                        await dumper.DumpAsync("mutated", node, null, null, ctx.RequestAborted);
+                    }
+                    else
+                    {
+                        forwardBytes = originalBytes;
+                    }
                 }
                 else
                 {
                     forwardBytes = originalBytes;
                 }
             }
-            else
-            {
-                forwardBytes = originalBytes;
-            }
         }
     }
 
-    var baseUrl = proxyOpts.CurrentValue.VertexBaseUrl?.TrimEnd('/');
+    var isAnthropicPath = requestPath.StartsWith("/v1/messages", StringComparison.OrdinalIgnoreCase);
+    var anthropicBase = proxyOpts.CurrentValue.AnthropicBaseUrl?.TrimEnd('/');
+    var vertexBase    = proxyOpts.CurrentValue.VertexBaseUrl?.TrimEnd('/');
+    // Route to Anthropic only when the path matches AND AnthropicBaseUrl is configured.
+    // A /v1/messages request with no AnthropicBaseUrl falls through to Vertex.
+    var useAnthropic = isAnthropicPath && !string.IsNullOrWhiteSpace(anthropicBase);
+    var baseUrl  = useAnthropic ? anthropicBase : vertexBase;
+    var provider = useAnthropic ? ProviderAnthropic : ProviderVertex;
     if (string.IsNullOrWhiteSpace(baseUrl))
     {
-        log.LogError("Proxy:VertexBaseUrl is not configured");
+        var whichUrl = useAnthropic ? "Proxy:AnthropicBaseUrl" : "Proxy:VertexBaseUrl";
+        log.LogError("{ConfigKey} is not configured", whichUrl);
         ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
-        await ctx.Response.WriteAsync("Proxy misconfigured: Proxy:VertexBaseUrl is empty.");
+        await ctx.Response.WriteAsync($"Proxy misconfigured: {whichUrl} is empty.");
         return;
     }
 
@@ -220,7 +260,7 @@ app.Map("{**path}", async (
         ctx.Request.Method, requestPath, (int)response.StatusCode);
 
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
-    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, requestStartedAt, ctx.RequestAborted);
+    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, provider, baseUrl, requestStartedAt, ctx.RequestAborted);
 });
 
 app.Run();
@@ -245,4 +285,11 @@ static string? ExtractModel(string? path)
     var start = idx + 8;
     var end = path.IndexOfAny([':', '?', '/'], start);
     return end > start ? path[start..end] : path[start..];
+}
+
+// Returns "vertex", "anthropic", or null (meaning all providers).
+static string? ParseProvider(HttpContext ctx)
+{
+    var p = ctx.Request.Query["provider"].FirstOrDefault()?.ToLowerInvariant();
+    return p is "vertex" or "anthropic" ? p : null;
 }

@@ -9,13 +9,15 @@ public sealed class UsageLogger(
     IOptionsMonitor<DumpOptions> dumpOpts,
     StatsTracker stats)
 {
-    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, DateTimeOffset startedAt, CancellationToken ct)
+    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, string? provider, string? upstreamBaseUrl, DateTimeOffset startedAt, CancellationToken ct)
     {
         var current = new RequestStats(
             Guid.NewGuid().ToString("N")[..8],
             startedAt)
         {
             Model = model,
+            Provider = provider,
+            UpstreamBaseUrl = upstreamBaseUrl,
         };
 
         var buffer = new byte[8192];
@@ -197,6 +199,8 @@ public sealed class RequestStats
     public string RequestId { get; }
     public DateTimeOffset Timestamp { get; }
     public string? Model { get; set; }
+    public string? Provider { get; set; }
+    public string? UpstreamBaseUrl { get; set; }
     public int InputUncached { get; set; }
     public int CacheRead { get; set; }
     public int CacheCreation5m { get; set; }

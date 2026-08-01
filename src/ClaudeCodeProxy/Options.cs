@@ -11,6 +11,9 @@ public sealed class ProxyOptions
     // e.g. "https://aiplatform.googleapis.com/v1" — the incoming request path is appended verbatim.
     public string VertexBaseUrl { get; set; } = "https://global-aiplatform.googleapis.com/v1";
 
+    // e.g. "https://api.anthropic.com" — no trailing /v1. Used for /v1/messages* paths.
+    public string AnthropicBaseUrl { get; set; } = string.Empty;
+
     // {{key}} substitutions applied to the prompt file at request time.
     public Dictionary<string, string> Variables { get; set; } = new();
 }
@@ -23,6 +26,12 @@ public sealed class DumpOptions
 
     // Use Windows-style paths — WSL paths are misinterpreted. Default is a placeholder; install.ps1 rewrites this on first install.
     public string OutputPath { get; set; } = "<set-to-a-writable-directory>";
+}
+
+public sealed class HeaderDumpOptions
+{
+    // Diagnostic only — appends every incoming request header (including auth) to C:\tmp\headers.txt.
+    public bool Enabled { get; set; } = false;
 }
 
 public sealed class StatsOptions
