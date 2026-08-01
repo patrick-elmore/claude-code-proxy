@@ -96,6 +96,16 @@ Write-Host "Merging new config keys from published defaults..."
 $liveConfig     = $appSettingsBackup | ConvertFrom-Json
 $templateConfig = Get-Content $AppSettings -Raw | ConvertFrom-Json
 Merge-MissingKeys -Live $liveConfig -Template $templateConfig
+
+# Migrate legacy configs that pointed PromptFilePath at the repo working copy.
+# The prompt is now deployed into the install directory by dotnet publish.
+$repoPrompt     = (Join-Path $ScriptDir "prompts\default.md") -replace '\\', '/'
+$deployedPrompt = (Join-Path $InstallDir "prompts\default.md") -replace '\\', '/'
+if (($liveConfig.Proxy.PromptFilePath -replace '\\', '/') -eq $repoPrompt) {
+    $liveConfig.Proxy.PromptFilePath = $deployedPrompt
+    Write-Host "  ~ Proxy.PromptFilePath migrated to deployed copy: $deployedPrompt"
+}
+
 $liveConfig | ConvertTo-Json -Depth 10 | Set-Content $AppSettings -Encoding UTF8
 Write-Host "Config merge complete."
 

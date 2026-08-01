@@ -25,6 +25,12 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
 
     private const string AttributionPrefix = "x-anthropic-billing-header";
 
+    // Cached for 1 minute so prompt edits apply without a restart while avoiding per-request disk reads.
+    private static readonly TimeSpan PromptCacheTtl = TimeSpan.FromMinutes(1);
+    private CachedPrompt? _cachedPrompt;
+
+    private sealed record CachedPrompt(string Path, string Content, DateTime LoadedAtUtc);
+
     public async Task<RewriteOutcome> RewriteAsync(JsonNode? root)
     {
         // Not a message-shaped request — rewriting was never applicable, nothing to track.
@@ -39,7 +45,10 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             logger.LogDebug("No PromptFilePath configured — passthrough");
             return RewriteOutcome.Failure(PromptFailureMode.PromptNotConfigured);
         }
-        if (!File.Exists(promptPath))
+        var cached = _cachedPrompt;
+        if (cached is not null && (cached.Path != promptPath || DateTime.UtcNow - cached.LoadedAtUtc >= PromptCacheTtl))
+            cached = null;
+        if (cached is null && !File.Exists(promptPath))
         {
             logger.LogWarning("Prompt file not found at {Path} — passthrough", promptPath);
             return RewriteOutcome.Failure(PromptFailureMode.PromptFileNotFound);
@@ -67,14 +76,22 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
 
         // Read and prepare the custom prompt — shared by both injection strategies below.
         string customPrompt;
-        try
+        if (cached is not null)
         {
-            customPrompt = await File.ReadAllTextAsync(promptPath);
+            customPrompt = cached.Content;
         }
-        catch (Exception ex)
+        else
         {
-            logger.LogWarning(ex, "Failed to read prompt file at {Path} — passthrough", promptPath);
-            return RewriteOutcome.Failure(PromptFailureMode.PromptFileReadError, identityNotRecognized);
+            try
+            {
+                customPrompt = await File.ReadAllTextAsync(promptPath);
+                _cachedPrompt = new CachedPrompt(promptPath, customPrompt, DateTime.UtcNow);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Failed to read prompt file at {Path} — passthrough", promptPath);
+                return RewriteOutcome.Failure(PromptFailureMode.PromptFileReadError, identityNotRecognized);
+            }
         }
 
         foreach (var (key, value) in options.CurrentValue.Variables)

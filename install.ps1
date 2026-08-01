@@ -6,10 +6,10 @@
 .DESCRIPTION
     Verifies .NET 10 prerequisites, builds the proxy from source, publishes
     binaries to %LOCALAPPDATA%\ClaudeCodeProxy, and registers a Windows
-    service. The custom prompt file remains in this source repository
-    (prompts\default.md) so it can be edited under version control —
-    install.ps1 rewrites the installed appsettings.json's PromptFilePath
-    to the absolute path of the in-repo prompt.
+    service. The custom prompt file is authored in this source repository
+    (prompts\default.md) and deployed to the install directory by
+    dotnet publish — the service reads the deployed copy, refreshed on a
+    1-minute cache. Re-run update.ps1 after editing the repo prompt.
 
     On re-install, the existing installed appsettings.json is preserved
     so user-configured changes survive.
@@ -44,7 +44,8 @@ Write-Host ".NET 10 SDK and ASP.NET Core 10 runtime verified."
 $ScriptDir   = $PSScriptRoot
 $ProjectDir  = Join-Path $ScriptDir "src\ClaudeCodeProxy"
 $InstallDir  = Join-Path $env:LOCALAPPDATA "ClaudeCodeProxy"
-$PromptPath  = Join-Path $ScriptDir "prompts\default.md"
+$RepoPrompt  = Join-Path $ScriptDir "prompts\default.md"
+$PromptPath  = Join-Path $InstallDir "prompts\default.md"
 $DumpPath    = Join-Path $InstallDir "dumps"
 $ExePath     = Join-Path $InstallDir "ClaudeCodeProxy.exe"
 $AppSettings = Join-Path $InstallDir "appsettings.json"
@@ -53,9 +54,9 @@ $ServiceName = "ClaudeCodeProxy"
 $DisplayName = "Claude Code Proxy"
 $Description = "Transparent HTTP proxy for Claude Code (Vertex AI). Replaces the static system-prompt portion with a custom one."
 
-# Verify the in-repo prompt file exists before going further
-if (-not (Test-Path $PromptPath)) {
-    Write-Error "Prompt file not found at $PromptPath. Did you clone the repo cleanly?"
+# Verify the in-repo prompt file exists before going further (publish deploys it)
+if (-not (Test-Path $RepoPrompt)) {
+    Write-Error "Prompt file not found at $RepoPrompt. Did you clone the repo cleanly?"
     exit 1
 }
 
@@ -160,7 +161,7 @@ try {
 
 Write-Host ""
 Write-Host "  Install dir:  $InstallDir"
-Write-Host "  Prompt file:  $PromptPath  (edit in source repo)"
+Write-Host "  Prompt file:  $PromptPath  (edit $RepoPrompt, then run update.ps1)"
 Write-Host "  Settings:     $AppSettings"
 Write-Host "  Dumps:        $DumpPath"
 Write-Host "  Logs:         $InstallDir\logs\proxy_YYYYMMDD.log"

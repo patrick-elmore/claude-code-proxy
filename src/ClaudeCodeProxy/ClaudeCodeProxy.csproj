@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <Content Update="pricing.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\prompts\default.md" Link="prompts\default.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
