@@ -36,6 +36,13 @@ public sealed class HeaderDumpOptions
 
 public sealed class StatsOptions
 {
-    // One file per local day: stats-YYYYMMDD.json.
+    // One file per stats day: stats-YYYYMMDD.json.
     public string OutputPath { get; set; } = "./stats";
+
+    // IANA time zone id the day boundary is evaluated in.
+    public string DayBoundaryTimeZone { get; set; } = "America/New_York";
+
+    // Wall-clock time in DayBoundaryTimeZone where a new stats day begins.
+    // Midnight means each stats period runs from 00:00 to 00:00 in DayBoundaryTimeZone.
+    public TimeSpan DayBoundaryTime { get; set; } = TimeSpan.Zero;
 }

@@ -70,7 +70,7 @@ app.MapPost("/stats/dismiss/{mode}", (string mode, StatsTracker st) =>
 app.MapGet("/stats", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
 {
     var provider = ParseProvider(ctx);
-    var today = DateOnly.FromDateTime(DateTime.Now);
+    var today = st.ComputeCurrentStatsDay();
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), today, today);
     return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, version, prev, next, provider), "text/html; charset=utf-8");
 });
@@ -84,7 +84,7 @@ app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, Pric
     var snapshot = st.GetSnapshotForDate(d);
     if (snapshot is null) return Results.NotFound($"No stats for {date}.");
     var provider = ParseProvider(ctx);
-    var today = DateOnly.FromDateTime(DateTime.Now);
+    var today = st.ComputeCurrentStatsDay();
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), d, today);
     return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, version, prev, next, provider), "text/html; charset=utf-8");
 });
@@ -267,7 +267,7 @@ app.Run();
 
 static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
 {
-    var today = DateOnly.FromDateTime(DateTime.Now);
+    var today = st.ComputeCurrentStatsDay();
     var list = new List<StatsSnapshot>(days);
     for (var i = days - 1; i >= 0; i--)
     {

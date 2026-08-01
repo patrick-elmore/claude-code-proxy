@@ -8,6 +8,8 @@ namespace ClaudeCodeProxy;
 public sealed class StatsTracker
 {
     private readonly string _outputPath;
+    private readonly TimeZoneInfo _dayBoundaryTimeZone;
+    private readonly TimeSpan _dayBoundaryTime;
     private readonly ILogger<StatsTracker> _logger;
     private readonly Lock _lock = new();
 
@@ -39,11 +41,25 @@ public sealed class StatsTracker
     {
         _outputPath = opts.Value.OutputPath;
         _logger = logger;
-        _currentDate = DateOnly.FromDateTime(DateTimeOffset.Now.LocalDateTime);
+        try
+        {
+            _dayBoundaryTimeZone = TimeZoneInfo.FindSystemTimeZoneById(opts.Value.DayBoundaryTimeZone);
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            _logger.LogWarning(ex, "Unknown Stats:DayBoundaryTimeZone '{TimeZone}'; falling back to server local time",
+                opts.Value.DayBoundaryTimeZone);
+            _dayBoundaryTimeZone = TimeZoneInfo.Local;
+        }
+        _dayBoundaryTime = opts.Value.DayBoundaryTime;
+        _currentDate = ComputeCurrentStatsDay();
         _startedAt = DateTimeOffset.Now;
         Directory.CreateDirectory(_outputPath);
         LoadFromDisk();
     }
+
+    // Computed fresh each call — safe to use from read-only paths without mutating tracker state.
+    public DateOnly ComputeCurrentStatsDay() => StatsDay.For(DateTimeOffset.Now, _dayBoundaryTimeZone, _dayBoundaryTime);
 
     public void Record(RequestStats stats)
     {
@@ -417,7 +433,7 @@ public sealed class StatsTracker
 
     private void MaybeRollover()
     {
-        var today = DateOnly.FromDateTime(DateTimeOffset.Now.LocalDateTime);
+        var today = ComputeCurrentStatsDay();
         if (today == _currentDate) return;
 
         _logger.LogInformation("Stats rolling over from {OldDate} to {NewDate}", _currentDate, today);
