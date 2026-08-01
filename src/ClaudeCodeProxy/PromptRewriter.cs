@@ -63,6 +63,12 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
 
         if (bulkBlock is null)
         {
+            // Known identity block(s) only — agent SDK sub-agent with no behavioral prompt to replace.
+            if (identityFound)
+            {
+                logger.LogDebug("No bulk system block found but identity recognized — agent SDK sub-agent, skipping injection");
+                return RewriteOutcome.NotApplicable;
+            }
             logger.LogDebug("No bulk system block found — passthrough (proactive mode or unusual shape)");
             return RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock, identityNotRecognized);
         }
