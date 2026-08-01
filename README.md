@@ -1,6 +1,6 @@
 # Claude Code Proxy
 
-A local HTTP proxy that intercepts Claude Code's outbound requests to Google Vertex AI and replaces the static behavioral portion of the system prompt with a custom one. Everything else passes through unchanged.
+A local HTTP proxy that intercepts Claude Code's outbound requests — to Google Vertex AI, and optionally to the direct Anthropic API — and replaces the static behavioral portion of the system prompt with a custom one. Everything else passes through unchanged.
 
 ## What it does
 
@@ -8,17 +8,19 @@ Claude Code ships with a fixed system prompt that defines its general behavior (
 
 This proxy lets you swap that out for a system prompt tuned to your own preferences and working style, while leaving every other piece of Claude Code's plumbing intact:
 
-- The Claude Code identity prefix is preserved (so Anthropic's prefix-cache routing still works).
+- The Claude Code identity block is preserved (so Anthropic's prefix-cache routing still works).
 - The session-specific dynamic content (`# Session-specific guidance`, `# auto memory`, `# Environment`, `# Context management`, gitStatus) is preserved verbatim — Claude Code's per-project memory, environment info, and git context all keep working.
 - The `messages` array, `tools` definitions, request metadata, and response stream are all forwarded byte-for-byte.
-- Google authentication passes through transparently — the proxy holds no credentials.
+- Upstream authentication passes through transparently — the proxy doesn't use your credentials to make requests of its own. It does keep the most recently seen bearer token in memory for diagnostic inspection; see [Diagnostics](#diagnostics).
 
-The mutation only touches the static behavioral text in `system[2]` between the identity prefix and `# Session-specific guidance`.
+Blocks in the `system[]` array are identified by content, not position: the known Claude Code identity string(s) and the Anthropic billing-attribution block are recognized and skipped, and the longest remaining block is treated as the behavioral prompt to replace.
+
+The proxy also runs in **dual mode**: it can front a Vertex AI-backed Claude Code session, a direct-Anthropic-API-backed session, or both at once (routing is per-request, based on the request path), and it tracks usage stats and cost separately per provider.
 
 ## Requirements
 
-- **Vertex AI only.** This proxy is for Claude Code installations using `CLAUDE_CODE_USE_VERTEX=1`. Anthropic-direct-API and Bedrock are not supported.
 - **Windows host.** The proxy runs as a Windows service. WSL is fine for development but the binary itself is Windows-targeted.
+- **Vertex AI and/or the direct Anthropic API.** Point Claude Code at the proxy using whichever mode(s) you use — `CLAUDE_CODE_USE_VERTEX=1` for Vertex, or the standard Anthropic API base URL override for direct-API mode. Amazon Bedrock is not supported.
 - **.NET 10 SDK** for building.
 - **Administrator privileges** to install as a Windows service.
 
@@ -35,17 +37,17 @@ powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
 The script:
 
 1. Verifies `.NET 10 SDK` and `ASP.NET Core 10 runtime` are present (fails with a download URL if not).
-2. Publishes binaries to `%LOCALAPPDATA%\ClaudeCodeProxy\`.
-3. On first install, rewrites the installed `appsettings.json` to point `Proxy:PromptFilePath` at the in-repo prompt file (`prompts\default.md`) and `Dump:OutputPath` at `%LOCALAPPDATA%\ClaudeCodeProxy\dumps\`. On re-install, your existing `appsettings.json` is preserved.
+2. Publishes binaries to `%LOCALAPPDATA%\ClaudeCodeProxy\`. The prompt file (`prompts\default.md`) is deployed alongside the binaries as part of publish.
+3. On first install, rewrites the installed `appsettings.json` to point `Proxy:PromptFilePath` at the deployed prompt copy (`%LOCALAPPDATA%\ClaudeCodeProxy\prompts\default.md`), and `Dump:OutputPath` / `Stats:OutputPath` at their own subdirectories under the install directory. On re-install, your existing `appsettings.json` is preserved.
 4. Registers an auto-start Windows service named `ClaudeCodeProxy`.
 
 The script starts the service automatically once it's registered. The service binds to `127.0.0.1:9996` (loopback only).
 
-The custom prompt file stays in this source repo (`prompts\default.md`) so you can edit it under version control. The installed `appsettings.json` references its absolute path. If you move or rename the source repo, re-run `install.ps1` to update the path.
+The prompt file is authored in this source repo (`prompts\default.md`) but the running service reads its own deployed copy, refreshed on a 1-minute cache — not the repo file directly. After editing `prompts\default.md`, run `update.ps1` to rebuild and redeploy it (see [Customizing the system prompt](#customizing-the-system-prompt)).
 
 ### 2. Point Claude Code at the proxy
 
-In the shell where you run `claude`, set:
+For **Vertex AI** mode, in the shell where you run `claude`:
 
 ```bash
 # WSL / bash
@@ -56,6 +58,8 @@ export ANTHROPIC_VERTEX_BASE_URL=http://localhost:9996
 # Windows PowerShell
 $env:ANTHROPIC_VERTEX_BASE_URL = "http://127.0.0.1:9996"
 ```
+
+For **direct Anthropic API** mode, set the standard Anthropic base URL override (e.g. `ANTHROPIC_BASE_URL=http://localhost:9996`) instead, and configure `Proxy:AnthropicBaseUrl` in `appsettings.json` (see [Configuration](#configuration)) so the proxy knows where to forward `/v1/messages` requests. You can run both modes against the same proxy instance simultaneously — it routes each request based on its path shape.
 
 Persist these in your shell profile (`.bashrc`, PowerShell `$PROFILE`) once you've confirmed everything works.
 
@@ -78,23 +82,33 @@ All configuration lives in `appsettings.json` next to the published binary (`%LO
 | Key | Default | Purpose |
 |---|---|---|
 | `Enabled` | `true` | Master switch for system-prompt rewriting. When `false`, the proxy forwards every request byte-for-byte to the upstream — no JSON parse, no rewriter call, no mutation. The service stays listening; only the mutation step is skipped. Useful for A/B testing the prompt against the default Claude Code behavior without uninstalling the service. |
-| `PromptFilePath` | `prompts/default.md` | Path to the file containing your custom system prompt (relative to the binary location, or absolute). `install.ps1` rewrites this to the absolute path of the in-repo `prompts/default.md` on first install. If empty or the file is missing, the proxy passes requests through unmodified (no mutation, but still parses/reserializes — for true byte-for-byte passthrough use `Enabled: false`). |
+| `PromptFilePath` | `prompts/default.md` | Path to the file containing your custom system prompt (relative to the binary location, or absolute). `install.ps1` points this at the deployed prompt copy under the install directory on first install. The loaded content is cached for 1 minute — see [Customizing the system prompt](#customizing-the-system-prompt). If empty or the file is missing, the proxy passes requests through unmodified (no mutation, but still parses/reserializes — for true byte-for-byte passthrough use `Enabled: false`). |
 | `VertexBaseUrl` | `https://aiplatform.googleapis.com/v1` | Upstream Vertex endpoint, including the `/v1` segment. Use the global host (no region prefix) when working with `locations/global`; use `https://{region}-aiplatform.googleapis.com/v1` for regional endpoints. |
+| `AnthropicBaseUrl` | `""` (empty) | Upstream direct-Anthropic-API endpoint, e.g. `https://api.anthropic.com` — **no** trailing `/v1`. Requests to `/v1/messages*` are routed here instead of Vertex, but only when this is set; leaving it empty means those paths fall through to `VertexBaseUrl` like everything else. |
 | `Variables` | `{}` | Optional dictionary of `{{key}}` → value substitutions applied to the prompt file at request time. Reserved for future use. |
 
 ### `Dump` section
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Enabled` | `false` | When true, captures the inbound request body before and after mutation. Auto-disables after `MaxRequests` reached. |
-| `MaxRequests` | `5` | Number of original requests to capture before auto-disabling. |
-| `OutputPath` | `<set-to-a-writable-directory>` | Directory for dump files. The default in source is a placeholder so dumps don't accidentally land in the working tree — `install.ps1` rewrites this to `%LOCALAPPDATA%\ClaudeCodeProxy\dumps` on first install. When running outside the installed service, set this explicitly before enabling `Dump:Enabled`. **Use a Windows-style path** — the service runs as a Windows process and misinterprets WSL-style `/mnt/c/...` paths as `C:\mnt\c\...`. |
+| `Enabled` | `false` | When true, captures the inbound request body before and after mutation for the first `MaxRequests` requests, then auto-disables. |
+| `MaxRequests` | `5` | Number of original requests to capture (under `Enabled`) before auto-disabling. |
+| `FailureDumpEnabled` | `false` | When true, captures the raw request body for every request that hits a tracked rewrite-failure mode (see the failure banners on the [stats dashboard](#stats-dashboard)) — independent of `Enabled`/`MaxRequests`, so it keeps running until you turn it off. Capped at 50 MB/day to avoid filling disk on a persistent failure. |
+| `OutputPath` | `<set-to-a-writable-directory>` | Directory for dump files (shared by both `Enabled` and `FailureDumpEnabled`). The default in source is a placeholder so dumps don't accidentally land in the working tree — `install.ps1` rewrites this to `%LOCALAPPDATA%\ClaudeCodeProxy\dumps` on first install. When running outside the installed service, set this explicitly before enabling either dump mode. **Use a Windows-style path** — the service runs as a Windows process and misinterprets WSL-style `/mnt/c/...` paths as `C:\mnt\c\...`. |
+
+### `HeaderDump` section
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Enabled` | `false` | Diagnostic only. When true, appends every incoming request's headers (including `Authorization`) to `C:\tmp\headers.txt` for every request. Used for debugging auth handshakes when standing up a new environment; leave off otherwise. See [Diagnostics](#diagnostics). |
 
 ### `Stats` section
 
 | Key | Default | Purpose |
 |---|---|---|
 | `OutputPath` | `./stats` | Directory where daily stats files are written. `install.ps1` creates this under `%LOCALAPPDATA%\ClaudeCodeProxy\stats\`. |
+| `DayBoundaryTimeZone` | `America/New_York` | IANA time zone id the stats day boundary is evaluated in. Falls back to the server's local time zone (with a logged warning) if the configured id is invalid. |
+| `DayBoundaryTime` | `00:00:00` | Wall-clock time in `DayBoundaryTimeZone` where a new stats day begins. `00:00:00` (the default) means each stats day runs local midnight to midnight. A boundary of `20:00:00` would mean the period from 8 PM on day D to 8 PM on day D+1 is labeled D+1 (the day the period ends on). |
 
 ### `Serilog` section
 
@@ -113,7 +127,7 @@ The default prompt at `prompts/default.md` is a working example covering enginee
 1. Edit `prompts/default.md` directly, or
 2. Create a new file (anywhere) and point `Proxy:PromptFilePath` at it in `appsettings.json`.
 
-The proxy reads the file fresh on every request, so prompt edits take effect immediately — no service restart needed.
+The prompt file is deployed to the install directory as part of `dotnet publish`, not read live from the repo — after editing `prompts/default.md`, run `update.ps1` (elevated) to rebuild and redeploy it. `PromptRewriter` caches the loaded content for 1 minute, so once the deployed file changes, edits apply within a minute with no service restart needed. If you pointed `PromptFilePath` at a file outside the repo instead, that file is read live subject to the same 1-minute cache.
 
 ### What to put in the prompt
 
@@ -128,20 +142,23 @@ Focus your prompt on principles, behavior rules, communication style, and approa
 
 ### What gets replaced vs. preserved
 
-For each inbound `POST /projects/.../models/{model}:rawPredict` (or `:streamRawPredict`):
+For each inbound request that carries a `system[]` array — Vertex's `POST /projects/.../models/{model}:rawPredict` (or `:streamRawPredict`), or the direct API's `POST /v1/messages` — the proxy:
 
-1. The proxy parses the JSON body and finds the `system` array.
-2. It identifies blocks by content:
+1. Parses the JSON body and finds the `system` array. Requests with `max_tokens: 1` (Claude Code's model-availability probe) are skipped untouched.
+2. Identifies blocks by content:
    - Block starting with `x-anthropic-billing-header` → preserved (attribution).
-   - Block matching one of the three known Claude Code identity-prefix strings → preserved.
+   - Block matching one of the known Claude Code identity-prefix strings → preserved.
    - The longest remaining block → the bulk block.
-3. Within the bulk block, it searches for the first occurrence of `\n# Session-specific guidance\n` (with `\n# auto memory\n` and `\n# Environment\n` as fallbacks).
-4. Everything **before** that boundary is replaced with the custom prompt; everything from the boundary onward is preserved verbatim.
-5. The mutated body is forwarded to the configured Vertex endpoint with the original auth header attached.
+3. If no bulk block is found but an identity block was recognized (an agent-SDK sub-agent request with no behavioral prompt of its own), the request is left alone — nothing to replace.
+4. Otherwise, within the bulk block, it searches for the first occurrence of `\n# Session-specific guidance\n` (with `\n# auto memory\n` and `\n# Environment\n` as fallbacks).
+5. Everything **before** that boundary is replaced with the custom prompt; everything from the boundary onward is preserved verbatim. If no boundary is found at all (e.g. a genuine sub-agent or custom-prompted request), the custom prompt is inserted as a new block instead of replacing text in place.
+6. The mutated body is forwarded to the configured upstream (Vertex or Anthropic, depending on the path and whether `Proxy:AnthropicBaseUrl` is set) with the original auth header attached.
 
-If any condition is unmet (no `system` field, body isn't JSON, no boundary marker, etc.), the proxy forwards the request unmodified — fail-safe to transparent passthrough.
+If any condition is unmet (no `system` field, body isn't JSON, no boundary marker, prompt file missing, etc.), the proxy forwards the request unmodified — fail-safe to transparent passthrough. The [stats dashboard](#stats-dashboard) surfaces these as dismissable failure banners so you notice when rewriting silently stops happening.
 
-## Debug mode
+## Diagnostics
+
+### Dump mode
 
 When you want to inspect what's actually on the wire, enable dump mode:
 
@@ -153,7 +170,7 @@ When you want to inspect what's actually on the wire, enable dump mode:
 }
 ```
 
-Restart the service. The next 5 requests will write three files each to the dump directory:
+Restart the service. The next 5 requests will write files to the dump directory:
 
 - `{timestamp}-original.json` — body as received from Claude Code (pretty-printed JSON if it parses)
 - `{timestamp}-mutated.json` — body after the prompt rewrite (only when mutation actually happened)
@@ -161,22 +178,33 @@ Restart the service. The next 5 requests will write three files each to the dump
 
 After 5 requests, dumping auto-disables to avoid filling disk. Re-enabling requires another `appsettings.json` edit + restart.
 
+To instead capture only requests that hit a rewrite failure (regardless of how many), set `Dump:FailureDumpEnabled` to `true`. This writes `{timestamp}-failure-{Mode}.json` (plus a matching `-path.txt`) for every failing request and keeps running — capped at 50 MB/day rather than a request count — so it's suited to catching an intermittent failure over a longer window.
+
+### Header and auth-token inspection
+
+Two diagnostic-only tools help debug enterprise auth handshakes when standing up a new environment:
+
+- Set `HeaderDump:Enabled` to `true` to append every incoming request's headers (including `Authorization`) to `C:\tmp\headers.txt`. Leave this off outside active debugging — it's unfiltered and includes credentials.
+- `GET /internal/auth-token` (loopback-only, same as everything else the service exposes) returns the most recently seen `Authorization` header value, so you can confirm the token Claude Code is sending without turning on full header dumping.
+
 ## Stats dashboard
 
 The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
 
 | Endpoint | Description |
 |---|---|
-| `/stats` | Today's live view |
+| `/stats` | Today's (current stats day's) live view |
 | `/stats/{date}` | Historical view for a specific date (`yyyy-MM-dd`) |
 | `/stats/week` | Last 7 days aggregate |
 | `/stats/month` | Last 30 days aggregate |
 | `/stats.json` | Today's data as raw JSON |
 | `/stats/{date}.json` | Historical data as raw JSON |
 
-Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown, and hourly activity.
+Append `?provider=vertex` or `?provider=anthropic` to any HTML view to filter to just that upstream (buttons for this are also on the page itself); omit it to see both combined.
 
-Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. Cost estimates use the standard Vertex AI tier — see `src/ClaudeCodeProxy/pricing.json` for the rate catalog.
+Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown (annotated with provider when both are in use), an endpoint-routing breakdown (which upstream URLs actually received traffic), and hourly activity. When a rewrite failure mode has occurred (missing prompt file, unrecognized identity block, unknown request path, etc.), a dismissable banner surfaces it at the top of the page; dismissing posts to `/stats/dismiss/{mode}` and only re-appears if the failure count increases again.
+
+Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. The "day" a request counts toward is controlled by `Stats:DayBoundaryTimeZone`/`Stats:DayBoundaryTime` (see [Configuration](#configuration)). Cost estimates use each model's standard rate (with any active promotional rate applied for the date being priced) from `src/ClaudeCodeProxy/pricing.json`, refreshed via the `update-pricing` Claude Code skill in `.claude/skills/update-pricing/`.
 
 ## Service management
 
@@ -186,8 +214,8 @@ Three scripts at the repo root, all requiring an **elevated** PowerShell:
 # First-time install — verifies prerequisites, builds, registers, starts the service.
 powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
 
-# Update — rebuilds and redeploys binaries (preserving your appsettings.json),
-# stopping and restarting the service.
+# Update — rebuilds and redeploys binaries and the prompt file (preserving
+# your appsettings.json), stopping and restarting the service.
 powershell.exe -ExecutionPolicy Bypass -File .\update.ps1
 
 # Uninstall — stops and removes the service. Prompts before deleting the
@@ -213,7 +241,8 @@ Logs from the running service land in `%LOCALAPPDATA%\ClaudeCodeProxy\logs\proxy
 Most common cause: env-var didn't propagate to the `claude` process.
 
 ```bash
-echo $ANTHROPIC_VERTEX_BASE_URL    # should print http://localhost:9996
+echo $ANTHROPIC_VERTEX_BASE_URL    # should print http://localhost:9996 (Vertex mode)
+echo $ANTHROPIC_BASE_URL           # should print http://localhost:9996 (direct-API mode)
 ```
 
 If empty in the shell where you launched `claude`, set it and start a fresh `claude` session.
@@ -226,15 +255,21 @@ netstat -ano | findstr 9996
 
 ### TLS / connection errors in the log
 
-If you see `SocketException` or `Unable to read data from the transport connection` errors, the most likely cause is an incorrect `VertexBaseUrl`. For `locations/global`, the host is `aiplatform.googleapis.com` (not `global-aiplatform.googleapis.com`). For regional endpoints, use `{region}-aiplatform.googleapis.com`.
+If you see `SocketException` or `Unable to read data from the transport connection` errors, the most likely cause is an incorrect `VertexBaseUrl` or `AnthropicBaseUrl`. For Vertex `locations/global`, the host is `aiplatform.googleapis.com` (not `global-aiplatform.googleapis.com`). For regional endpoints, use `{region}-aiplatform.googleapis.com`. For direct Anthropic, the host is `api.anthropic.com` with no trailing `/v1`.
 
 ### 401 / 403 from Vertex
 
-Auth issue. Make sure `CLAUDE_CODE_SKIP_VERTEX_AUTH` is **not** set — Claude Code needs to generate real Google Bearer tokens for the proxy to forward.
+Auth issue. Make sure `CLAUDE_CODE_SKIP_VERTEX_AUTH` is **not** set — Claude Code needs to generate real Google Bearer tokens for the proxy to forward. See [Header and auth-token inspection](#header-and-auth-token-inspection) to confirm what the proxy is actually receiving.
+
+### `/v1/messages` requests aren't reaching Anthropic
+
+Confirm `Proxy:AnthropicBaseUrl` is actually set in the *installed* `appsettings.json` — an empty value silently falls through to `VertexBaseUrl` instead of erroring, by design, so a missing config value looks like the request just went to the wrong place rather than failing outright.
 
 ### My custom prompt isn't being applied
 
 Check that `Proxy:PromptFilePath` in `appsettings.json` points to a file that exists. The proxy logs a warning when the file is missing and passes through unmodified. Inspect `proxy_YYYYMMDD.log` for the warning.
+
+If the path is correct but a recent edit doesn't seem to have taken effect, remember the loaded prompt is cached for up to 1 minute, and that editing the repo's `prompts/default.md` requires running `update.ps1` to redeploy it — editing the repo file alone does not change what the running service reads.
 
 Run the verification prompt from the Setup section to confirm.
 
@@ -252,28 +287,36 @@ claude-code-proxy/
 ├── update.ps1                 # rebuild + redeploy, preserve config (admin-required)
 ├── uninstall.ps1              # stop + remove service (admin-required)
 ├── ClaudeCodeProxy.slnx       # solution
+├── .claude/skills/update-pricing/  # keeps pricing.json in sync with Anthropic's published rates
 ├── prompts/
-│   └── default.md             # the active replacement prompt (edit here)
+│   └── default.md             # the active replacement prompt (edit here, then run update.ps1)
 └── src/ClaudeCodeProxy/
-    ├── ClaudeCodeProxy.csproj
-    ├── Program.cs             # service host, routes, catch-all proxy handler
-    ├── PromptRewriter.cs      # block-level system-prompt mutation
+    ├── ClaudeCodeProxy.csproj # publishes prompts/default.md alongside the binary
+    ├── Program.cs             # service host, routes, catch-all proxy handler, Vertex/Anthropic routing
+    ├── PromptRewriter.cs      # block-level system-prompt mutation, 1-minute prompt cache
+    ├── PromptFailureMode.cs   # RewriteOutcome / failure-mode enum shared by tracking and dumps
     ├── HeaderCopying.cs       # hop-by-hop header filter
-    ├── Options.cs             # ProxyOptions, DumpOptions, StatsOptions
-    ├── RequestDumper.cs       # debug dump
-    ├── UsageLogger.cs         # SSE tap and usage extraction
-    ├── StatsTracker.cs        # per-day stats accumulation and persistence
-    ├── StatsHtmlRenderer.cs   # stats dashboard HTML
-    ├── PricingCatalog.cs      # Vertex AI rate lookup and cost calculation
-    ├── pricing.json           # rate catalog (standard tier, per model)
+    ├── HeaderDumper.cs        # diagnostic: dumps request headers to C:\tmp\headers.txt when enabled
+    ├── AuthTokenStore.cs      # diagnostic: last-seen Authorization header, exposed via /internal/auth-token
+    ├── Options.cs             # ProxyOptions, DumpOptions, HeaderDumpOptions, StatsOptions
+    ├── RequestDumper.cs       # debug dump (original/mutated bodies, and failure-mode dumps)
+    ├── UsageLogger.cs         # SSE tap and usage extraction, tagged with provider/upstream endpoint
+    ├── StatsTracker.cs        # per-day stats accumulation and persistence, by model/provider/endpoint
+    ├── StatsDay.cs            # computes the current stats day under the configurable day boundary
+    ├── StatsNavigation.cs     # prev/next date links for the stats dashboard
+    ├── StatsHtmlRenderer.cs   # stats dashboard HTML, provider filtering, failure banners
+    ├── PricingCatalog.cs      # rate lookup, cost calculation, date-bounded promotional rates
+    ├── pricing.json           # rate catalog (standard + promotional rates, per model)
     ├── appsettings.json       # source-repo defaults (install.ps1 rewrites paths)
-    └── appsettings.Development.json
+    ├── appsettings.Development.json
+    └── wwwroot/favicon.svg    # served directly by Program.cs, not via static-file middleware
 
 # Runtime artifacts (created by install.ps1):
 %LOCALAPPDATA%\ClaudeCodeProxy\
 ├── ClaudeCodeProxy.exe        # service binary
+├── prompts\default.md         # deployed prompt copy (the service reads this, not the repo file)
 ├── appsettings.json           # active config (preserved across updates)
 ├── logs\                      # Serilog output
-├── dumps\                     # debug dumps when Dump:Enabled = true
+├── dumps\                     # debug dumps when Dump:Enabled or Dump:FailureDumpEnabled = true
 └── stats\                     # daily stats JSON files
 ```
