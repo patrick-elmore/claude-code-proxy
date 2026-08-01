@@ -1,4 +1,5 @@
 {
+  "disableClaudeAiConnectors": true,
   "hooks": {
     "PreToolUse": [
       {
