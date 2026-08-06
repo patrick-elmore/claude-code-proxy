@@ -7,7 +7,9 @@ namespace ClaudeCodeProxy;
 internal static class StatsHtmlRenderer
 {
     public static string Render(StatsSnapshot s, PricingCatalog pricing, string version,
-        DateOnly? prevDate = null, DateOnly? nextDate = null, string? provider = null)
+        DateOnly? prevDate = null, DateOnly? nextDate = null, string? provider = null,
+        IReadOnlyList<StatsSnapshot>? currentMonthSnapshots = null, decimal monthlyTargetSpendUsd = 5500m,
+        SessionMetadataSnapshot? sessionMetadata = null)
     {
         var filteredModels = FilteredModels(s, provider);
         var snapshotDate = SnapshotDate(s);
@@ -81,6 +83,9 @@ internal static class StatsHtmlRenderer
             .prov-btn { color: #9ab; text-decoration: none; margin-right: 0; padding: .1rem .45rem; border: 1px solid #333; border-radius: 3px; font-size: .85rem; }
             .prov-btn:hover { border-color: #555; text-decoration: none; }
             .prov-active { color: #fff; border-color: #555; background: #2d2d2d; }
+            .session-total td { background: #222; border-top: 1px solid #444; }
+            .agent-label { display: inline-block; overflow-wrap: anywhere; }
+            .session-id { overflow-wrap: anywhere; }
             </style>
             </head><body>
             """);
@@ -152,6 +157,11 @@ internal static class StatsHtmlRenderer
             }
             sb.Append("</table>");
         }
+
+        if (currentMonthSnapshots is not null && snapshotDate is { } currentDate)
+            AppendCurrentMonthSpend(sb, currentMonthSnapshots, pricing, provider, currentDate, monthlyTargetSpendUsd);
+
+        AppendSessionSection(sb, BuildSessionRows([(s, snapshotDate)], pricing, provider), sessionMetadata);
 
         var filteredEndpoints = s.ByEndpoint
             .Where(kvp => provider is null || kvp.Value.Provider == provider)
@@ -225,7 +235,7 @@ internal static class StatsHtmlRenderer
     }
 
     public static string RenderRange(IReadOnlyList<StatsSnapshot> snapshots, PricingCatalog pricing, string title,
-        string currentPath, string version, string? provider = null)
+        string currentPath, string version, string? provider = null, SessionMetadataSnapshot? sessionMetadata = null)
     {
         var sb = new StringBuilder(8192);
 
@@ -323,6 +333,9 @@ internal static class StatsHtmlRenderer
             .prov-btn { color: #9ab; text-decoration: none; margin-right: 0; padding: .1rem .45rem; border: 1px solid #333; border-radius: 3px; font-size: .85rem; }
             .prov-btn:hover { border-color: #555; text-decoration: none; }
             .prov-active { color: #fff; border-color: #555; background: #2d2d2d; }
+            .session-total td { background: #222; border-top: 1px solid #444; }
+            .agent-label { display: inline-block; overflow-wrap: anywhere; }
+            .session-id { overflow-wrap: anywhere; }
             </style>
             </head><body>
             """);
@@ -424,6 +437,8 @@ internal static class StatsHtmlRenderer
             sb.Append("</table>");
         }
 
+        AppendSessionSection(sb, BuildSessionRows(snapshots.Select(s => (s, SnapshotDate(s))), pricing, provider), sessionMetadata);
+
         if (mergedEndpoints.Count > 0)
         {
             sb.Append("<h2>Endpoint routing</h2>");
@@ -459,6 +474,264 @@ internal static class StatsHtmlRenderer
             : s.ByModel
                 .Where(kvp => kvp.Value.Provider == provider)
                 .ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+    private static IReadOnlyList<SessionRow> BuildSessionRows(
+        IEnumerable<(StatsSnapshot snapshot, DateOnly? snapshotDate)> snapshots,
+        PricingCatalog pricing,
+        string? provider)
+    {
+        var rows = new Dictionary<string, SessionRow>(StringComparer.Ordinal);
+        foreach (var (snapshot, snapshotDate) in snapshots)
+        {
+            foreach (var session in snapshot.Sessions ?? [])
+            {
+                // An empty key is safe here: Claude Code's real session IDs are non-empty UUIDs.
+                var sessionKey = session.SessionId ?? "";
+                if (!rows.TryGetValue(sessionKey, out var sessionRow))
+                    rows[sessionKey] = sessionRow = new SessionRow(session.SessionId);
+
+                foreach (var agent in session.Agents)
+                {
+                    var metrics = FilteredAgentMetrics(agent, provider);
+                    if (!metrics.HasData) continue;
+
+                    var agentKey = agent.AgentId ?? "";
+                    if (!sessionRow.Agents.TryGetValue(agentKey, out var agentRow))
+                    {
+                        sessionRow.Agents[agentKey] = agentRow = new AgentRow(agent.AgentId, agent.ParentAgentId);
+                    }
+                    else if (agentRow.ParentAgentId is null && agent.ParentAgentId is not null)
+                    {
+                        agentRow.ParentAgentId = agent.ParentAgentId;
+                    }
+
+                    var cost = agent.ByModel.Values
+                        .Where(m => provider is null || m.Provider == provider)
+                        .Sum(m => pricing.CalculateCostUsd(m.Model, m.InputUncached, m.CacheRead,
+                            m.CacheCreation5m, m.CacheCreation1h, m.Output, snapshotDate));
+                    agentRow.Add(metrics, cost);
+                }
+            }
+        }
+
+        return rows.Values
+            .Where(s => s.Metrics.HasData)
+            .OrderBy(s => s.SessionId is null ? 1 : 0)
+            .ThenByDescending(s => s.Cost)
+            .ThenBy(s => s.SessionId, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static SessionMetrics FilteredAgentMetrics(AgentSnapshot agent, string? provider)
+    {
+        if (provider is null)
+            return new SessionMetrics(agent.Requests, agent.Failed, agent.Totals);
+
+        return agent.ByProvider.TryGetValue(provider, out var p)
+            ? new SessionMetrics(p.Requests, p.Failed,
+                new TokenTotals(p.InputUncached, p.CacheRead, p.CacheCreation5m, p.CacheCreation1h, p.Output))
+            : SessionMetrics.Empty;
+    }
+
+    private static void AppendSessionSection(
+        StringBuilder sb,
+        IReadOnlyList<SessionRow> sessions,
+        SessionMetadataSnapshot? metadata)
+    {
+        if (sessions.Count == 0) return;
+
+        sb.Append("<h2>Claude Code sessions</h2>");
+        sb.Append("<table><tr><th>session / agent</th><th class=\"num\">requests</th><th class=\"num\">failed</th><th class=\"num\">tokens in</th><th class=\"num\">output</th><th class=\"num\">cost</th></tr>");
+        foreach (var session in sessions)
+        {
+            var metrics = session.Metrics;
+            var sessionMetadata = session.SessionId is not null
+                && metadata?.Sessions.TryGetValue(session.SessionId, out var foundSessionMetadata) == true
+                ? foundSessionMetadata
+                : null;
+            var title = session.SessionId is null
+                ? "<strong>Unattributed</strong><div class=\"muted\">no Claude Code session ID</div>"
+                : SessionTitle(session.SessionId, sessionMetadata);
+            AppendSessionRow(sb, "session-total", title, metrics, session.Cost);
+
+            // Requests without a session ID cannot be assigned to a reliable hierarchy.
+            if (session.SessionId is not null)
+                AppendAgentHierarchy(sb, session, sessionMetadata);
+        }
+        sb.Append("</table>");
+    }
+
+    private static string SessionTitle(string sessionId, SessionMetadataSessionSnapshot? metadata)
+    {
+        var displayName = metadata?.DisplayName;
+        if (string.IsNullOrWhiteSpace(displayName))
+            displayName = FallbackSessionName(sessionId, metadata?.LastCwd);
+
+        return $"<strong>{Esc(displayName)}</strong><div class=\"muted\">session <span class=\"mono session-id\">{Esc(sessionId)}</span></div>";
+    }
+
+    private static string FallbackSessionName(string sessionId, string? cwd)
+    {
+        if (!string.IsNullOrWhiteSpace(cwd))
+        {
+            var trimmed = cwd.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var leaf = Path.GetFileName(trimmed);
+            if (!string.IsNullOrWhiteSpace(leaf))
+                return $"{leaf} ({ShortId(sessionId)})";
+        }
+
+        return "Session";
+    }
+
+    private static string ShortId(string id) => id[..Math.Min(id.Length, 8)];
+
+    private static void AppendAgentHierarchy(
+        StringBuilder sb,
+        SessionRow session,
+        SessionMetadataSessionSnapshot? metadata)
+    {
+        var agents = session.Agents.Values.ToList();
+        var byId = agents
+            .Where(a => a.AgentId is not null)
+            .ToDictionary(a => a.AgentId!, StringComparer.Ordinal);
+        var children = agents
+            .Where(a => a.AgentId is not null && a.ParentAgentId is not null && byId.ContainsKey(a.ParentAgentId))
+            .GroupBy(a => a.ParentAgentId!, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.OrderBy(a => a.AgentId, StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+
+        if (session.Agents.TryGetValue("", out var mainAgent))
+            AppendAgentBranch(sb, mainAgent, depth: 1, parentIsMissing: false, children, visited, metadata?.Agents);
+
+        foreach (var agent in agents
+            .Where(a => a.AgentId is not null && (a.ParentAgentId is null || !byId.ContainsKey(a.ParentAgentId)))
+            .OrderBy(a => a.AgentId, StringComparer.Ordinal))
+        {
+            AppendAgentBranch(sb, agent, depth: 1, parentIsMissing: agent.ParentAgentId is not null, children, visited, metadata?.Agents);
+        }
+
+        // Cyclic or otherwise malformed parent references still remain visible instead of disappearing.
+        foreach (var agent in agents.Where(a => a.AgentId is not null).OrderBy(a => a.AgentId, StringComparer.Ordinal))
+        {
+            if (!visited.Contains(agent.AgentId!))
+                AppendAgentBranch(sb, agent, depth: 1, parentIsMissing: false, children, visited, metadata?.Agents);
+        }
+    }
+
+    private static void AppendAgentBranch(
+        StringBuilder sb,
+        AgentRow agent,
+        int depth,
+        bool parentIsMissing,
+        IReadOnlyDictionary<string, List<AgentRow>> children,
+        ISet<string> visited,
+        IReadOnlyDictionary<string, AgentMetadataSnapshot>? metadata)
+    {
+        if (agent.AgentId is not null && !visited.Add(agent.AgentId)) return;
+
+        var padding = (depth * 1.25m).ToString("0.##", CultureInfo.InvariantCulture);
+        var title = new StringBuilder($"<span class=\"agent-label\" style=\"padding-left:{padding}rem\">");
+        if (agent.AgentId is null)
+        {
+            title.Append("<strong>Main agent</strong>");
+        }
+        else
+        {
+            var agentType = metadata?.TryGetValue(agent.AgentId, out var agentMetadata) == true
+                ? agentMetadata.AgentType
+                : null;
+            if (string.IsNullOrWhiteSpace(agentType))
+                title.Append("Agent <span class=\"mono\">").Append(Esc(agent.AgentId)).Append("</span>");
+            else
+                title.Append("<strong>").Append(Esc(agentType)).Append("</strong><div class=\"muted\">agent <span class=\"mono\">")
+                    .Append(Esc(agent.AgentId)).Append("</span></div>");
+            if (parentIsMissing && agent.ParentAgentId is not null)
+                title.Append(" <span class=\"muted\">parent: ").Append(Esc(agent.ParentAgentId)).Append(" (not observed)</span>");
+        }
+        title.Append("</span>");
+        AppendSessionRow(sb, "", title.ToString(), agent.Metrics, agent.Cost);
+
+        if (agent.AgentId is not null && children.TryGetValue(agent.AgentId, out var childAgents))
+            foreach (var child in childAgents)
+                AppendAgentBranch(sb, child, depth + 1, parentIsMissing: false, children, visited, metadata);
+    }
+
+    private static void AppendSessionRow(StringBuilder sb, string rowClass, string title, SessionMetrics metrics, decimal cost)
+    {
+        var input = metrics.Totals.InputUncached + metrics.Totals.CacheRead + metrics.Totals.CacheCreation;
+        sb.Append($"<tr class=\"{rowClass}\"><td>{title}</td>")
+          .Append($"<td class=\"num\">{N0(metrics.Requests)}</td>")
+          .Append($"<td class=\"num {(metrics.Failed > 0 ? "err" : "")}\">{N0(metrics.Failed)}</td>")
+          .Append($"<td class=\"num\">{N0(input)}</td>")
+          .Append($"<td class=\"num\">{N0(metrics.Totals.Output)}</td>")
+          .Append($"<td class=\"num cost\">{Money(cost)}</td></tr>");
+    }
+
+    private sealed class SessionRow(string? sessionId)
+    {
+        public string? SessionId { get; } = sessionId;
+        public Dictionary<string, AgentRow> Agents { get; } = new(StringComparer.Ordinal);
+        public SessionMetrics Metrics => Agents.Values.Aggregate(SessionMetrics.Empty, (sum, a) => sum + a.Metrics);
+        public decimal Cost => Agents.Values.Sum(a => a.Cost);
+    }
+
+    private sealed class AgentRow(string? agentId, string? parentAgentId)
+    {
+        public string? AgentId { get; } = agentId;
+        public string? ParentAgentId { get; set; } = parentAgentId;
+        public SessionMetrics Metrics { get; private set; } = SessionMetrics.Empty;
+        public decimal Cost { get; private set; }
+
+        public void Add(SessionMetrics metrics, decimal cost)
+        {
+            Metrics += metrics;
+            Cost += cost;
+        }
+    }
+
+    private readonly record struct SessionMetrics(long Requests, long Failed, TokenTotals Totals)
+    {
+        public static SessionMetrics Empty { get; } = new(0, 0, new TokenTotals(0, 0, 0, 0, 0));
+        public bool HasData => Requests != 0 || Failed != 0 || Totals.InputUncached != 0 || Totals.CacheRead != 0
+            || Totals.CacheCreation != 0 || Totals.Output != 0;
+        public static SessionMetrics operator +(SessionMetrics left, SessionMetrics right) =>
+            new(left.Requests + right.Requests, left.Failed + right.Failed,
+                new TokenTotals(left.Totals.InputUncached + right.Totals.InputUncached,
+                    left.Totals.CacheRead + right.Totals.CacheRead,
+                    left.Totals.CacheCreation5m + right.Totals.CacheCreation5m,
+                    left.Totals.CacheCreation1h + right.Totals.CacheCreation1h,
+                    left.Totals.Output + right.Totals.Output));
+    }
+
+    private static void AppendCurrentMonthSpend(
+        StringBuilder sb,
+        IReadOnlyList<StatsSnapshot> snapshots,
+        PricingCatalog pricing,
+        string? provider,
+        DateOnly currentDate,
+        decimal monthlyTargetSpendUsd)
+    {
+        decimal monthToDateCost = 0m;
+        foreach (var snapshot in snapshots)
+        {
+            var snapshotDate = SnapshotDate(snapshot);
+            foreach (var (key, model) in FilteredModels(snapshot, provider))
+            {
+                var modelName = model.Model ?? key;
+                monthToDateCost += pricing.CalculateCostUsd(modelName, model.InputUncached, model.CacheRead,
+                    model.CacheCreation5m, model.CacheCreation1h, model.Output, snapshotDate);
+            }
+        }
+
+        var daysInMonth = DateTime.DaysInMonth(currentDate.Year, currentDate.Month);
+        var dailyAverage = monthToDateCost / currentDate.Day;
+        var dailyTarget = monthlyTargetSpendUsd / daysInMonth;
+        var monthName = currentDate.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+
+        sb.Append($"<h2>{Esc(monthName)} daily spend</h2>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">daily average cost</span><span class=\"v cost\">{Money(dailyAverage)}</span> <span class=\"muted\">month-to-date across {currentDate.Day} day{(currentDate.Day == 1 ? "" : "s")}</span></div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">target daily spend</span><span class=\"v cost\">{Money(dailyTarget)}</span> <span class=\"muted\">{Money(monthlyTargetSpendUsd)} monthly target / {daysInMonth} days</span></div>");
+    }
 
     private static void AppendProviderButtons(StringBuilder sb, string basePath, string? activeProvider)
     {

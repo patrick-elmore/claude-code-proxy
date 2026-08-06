@@ -9,7 +9,9 @@ public sealed class UsageLogger(
     IOptionsMonitor<DumpOptions> dumpOpts,
     StatsTracker stats)
 {
-    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, string? provider, string? upstreamBaseUrl, DateTimeOffset startedAt, CancellationToken ct)
+    public async Task TapAndForwardAsync(Stream upstream, Stream downstream, string? model, string? provider,
+        string? upstreamBaseUrl, string? sessionId, string? agentId, string? parentAgentId,
+        DateTimeOffset startedAt, CancellationToken ct)
     {
         var current = new RequestStats(
             Guid.NewGuid().ToString("N")[..8],
@@ -18,6 +20,9 @@ public sealed class UsageLogger(
             Model = model,
             Provider = provider,
             UpstreamBaseUrl = upstreamBaseUrl,
+            SessionId = sessionId,
+            AgentId = agentId,
+            ParentAgentId = parentAgentId,
         };
 
         var buffer = new byte[8192];
@@ -201,6 +206,9 @@ public sealed class RequestStats
     public string? Model { get; set; }
     public string? Provider { get; set; }
     public string? UpstreamBaseUrl { get; set; }
+    public string? SessionId { get; set; }
+    public string? AgentId { get; set; }
+    public string? ParentAgentId { get; set; }
     public int InputUncached { get; set; }
     public int CacheRead { get; set; }
     public int CacheCreation5m { get; set; }

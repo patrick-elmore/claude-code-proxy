@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClaudeCodeProxy;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -39,6 +40,7 @@ builder.Services.AddSingleton<RequestDumper>();
 builder.Services.AddSingleton<HeaderDumper>();
 builder.Services.AddSingleton<PricingCatalog>();
 builder.Services.AddSingleton<StatsTracker>();
+builder.Services.AddSingleton<SessionMetadataStore>();
 builder.Services.AddSingleton<UsageLogger>();
 
 var app = builder.Build();
@@ -67,17 +69,19 @@ app.MapPost("/stats/dismiss/{mode}", (string mode, StatsTracker st) =>
     return Results.Redirect("/stats");
 });
 
-app.MapGet("/stats", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
+app.MapGet("/stats", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing, IOptions<StatsOptions> statsOptions) =>
 {
     var provider = ParseProvider(ctx);
     var today = st.ComputeCurrentStatsDay();
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), today, today);
-    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, version, prev, next, provider), "text/html; charset=utf-8");
+    var currentMonth = LoadCurrentMonth(st, today);
+    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, version, prev, next, provider,
+        currentMonth, statsOptions.Value.MonthlyTargetSpendUsd, metadata.GetSnapshot()), "text/html; charset=utf-8");
 });
 
 app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
 
-app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
+app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
 {
     if (!DateOnly.TryParseExact(date, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d))
         return Results.BadRequest("Date must be yyyy-MM-dd.");
@@ -86,7 +90,8 @@ app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, Pric
     var provider = ParseProvider(ctx);
     var today = st.ComputeCurrentStatsDay();
     var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), d, today);
-    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, version, prev, next, provider), "text/html; charset=utf-8");
+    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, version, prev, next, provider,
+        sessionMetadata: metadata.GetSnapshot()), "text/html; charset=utf-8");
 });
 
 app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
@@ -97,13 +102,62 @@ app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
     return snapshot is null ? Results.NotFound($"No stats for {date}.") : Results.Json(snapshot, statsJsonOptions);
 });
 
-app.MapGet("/stats/week", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days", "/stats/week", version, ParseProvider(ctx)), "text/html; charset=utf-8"));
+app.MapGet("/stats/week", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days", "/stats/week", version,
+        ParseProvider(ctx), metadata.GetSnapshot()), "text/html; charset=utf-8"));
 
-app.MapGet("/stats/month", (HttpContext ctx, StatsTracker st, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days", "/stats/month", version, ParseProvider(ctx)), "text/html; charset=utf-8"));
+app.MapGet("/stats/month", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
+    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days", "/stats/month", version,
+        ParseProvider(ctx), metadata.GetSnapshot()), "text/html; charset=utf-8"));
 
 app.MapGet("/internal/auth-token", () => Results.Text(AuthTokenStore.Value ?? string.Empty));
+
+app.MapPost("/internal/session-metadata", async (
+    HttpContext ctx,
+    SessionMetadataStore metadata,
+    ILogger<Program> log) =>
+{
+    const long MaxRequestBodyBytes = 16 * 1024;
+    if (ctx.Request.ContentLength is > MaxRequestBodyBytes)
+        return Results.BadRequest("Session metadata request body is too large.");
+
+    var maxBodySizeFeature = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+    if (maxBodySizeFeature is { IsReadOnly: false })
+        maxBodySizeFeature.MaxRequestBodySize = MaxRequestBodyBytes;
+
+    SessionMetadataRequest? request;
+    try
+    {
+        request = await JsonSerializer.DeserializeAsync<SessionMetadataRequest>(ctx.Request.Body, statsJsonOptions, ctx.RequestAborted);
+    }
+    catch (JsonException)
+    {
+        return Results.BadRequest("Session metadata must be valid JSON with known fields.");
+    }
+    catch (BadHttpRequestException)
+    {
+        return Results.BadRequest("Session metadata request body is too large.");
+    }
+
+    if (request is null)
+        return Results.BadRequest("Session metadata request body is required.");
+
+    if (!request.TryCreateUpdate(out var update, out var validationError))
+        return Results.BadRequest(validationError);
+
+    try
+    {
+        metadata.Upsert(update!);
+    }
+    catch (Exception ex)
+    {
+        // Side-channel metadata must never become a Claude Code failure, even if an unexpected
+        // local storage error escapes the store's own best-effort handling.
+        log.LogWarning(ex, "Failed to accept session metadata update");
+    }
+
+    return Results.NoContent();
+});
 
 // Mutation is body-shape-driven, not path-driven — any JSON body with a system[] is a candidate.
 app.Map("{**path}", async (
@@ -128,6 +182,11 @@ app.Map("{**path}", async (
 
     var requestPath = ctx.Request.Path.Value + ctx.Request.QueryString.Value;
     var model = ExtractModel(requestPath);
+    // Claude Code attaches these to every request (agent IDs only appear on subagent requests).
+    // Capture them before streaming the response so its usage can be attributed after completion.
+    var sessionId = HeaderValue(ctx.Request, "x-claude-code-session-id");
+    var agentId = HeaderValue(ctx.Request, "x-claude-code-agent-id");
+    var parentAgentId = HeaderValue(ctx.Request, "x-claude-code-parent-agent-id");
     var hasBody = ctx.Request.ContentLength is > 0
         || ctx.Request.Headers.ContainsKey("Transfer-Encoding");
 
@@ -260,7 +319,8 @@ app.Map("{**path}", async (
         ctx.Request.Method, requestPath, (int)response.StatusCode);
 
     await using var upstreamStream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
-    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, provider, baseUrl, requestStartedAt, ctx.RequestAborted);
+    await usageLogger.TapAndForwardAsync(upstreamStream, ctx.Response.Body, model, provider, baseUrl,
+        sessionId, agentId, parentAgentId, requestStartedAt, ctx.RequestAborted);
 });
 
 app.Run();
@@ -277,6 +337,18 @@ static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
     return list;
 }
 
+static List<StatsSnapshot> LoadCurrentMonth(StatsTracker st, DateOnly today)
+{
+    var firstDay = new DateOnly(today.Year, today.Month, 1);
+    var list = new List<StatsSnapshot>(today.Day);
+    for (var date = firstDay; date <= today; date = date.AddDays(1))
+    {
+        var snapshot = st.GetSnapshotForDate(date);
+        if (snapshot is not null) list.Add(snapshot);
+    }
+    return list;
+}
+
 static string? ExtractModel(string? path)
 {
     if (path is null) return null;
@@ -285,6 +357,12 @@ static string? ExtractModel(string? path)
     var start = idx + 8;
     var end = path.IndexOfAny([':', '?', '/'], start);
     return end > start ? path[start..end] : path[start..];
+}
+
+static string? HeaderValue(HttpRequest request, string name)
+{
+    var value = request.Headers[name].FirstOrDefault();
+    return string.IsNullOrWhiteSpace(value) ? null : value;
 }
 
 // Returns "vertex", "anthropic", or null (meaning all providers).

@@ -45,4 +45,7 @@ public sealed class StatsOptions
     // Wall-clock time in DayBoundaryTimeZone where a new stats day begins.
     // Midnight means each stats period runs from 00:00 to 00:00 in DayBoundaryTimeZone.
     public TimeSpan DayBoundaryTime { get; set; } = TimeSpan.Zero;
+
+    // Monthly spending budget used to display the daily target on the stats dashboard, in USD.
+    public decimal MonthlyTargetSpendUsd { get; set; } = 5500m;
 }

@@ -39,7 +39,8 @@ The script:
 1. Verifies `.NET 10 SDK` and `ASP.NET Core 10 runtime` are present (fails with a download URL if not).
 2. Publishes binaries to `%LOCALAPPDATA%\ClaudeCodeProxy\`. The prompt file (`prompts\default.md`) is deployed alongside the binaries as part of publish.
 3. On first install, rewrites the installed `appsettings.json` to point `Proxy:PromptFilePath` at the deployed prompt copy (`%LOCALAPPDATA%\ClaudeCodeProxy\prompts\default.md`), and `Dump:OutputPath` / `Stats:OutputPath` at their own subdirectories under the install directory. On re-install, your existing `appsettings.json` is preserved.
-4. Registers an auto-start Windows service named `ClaudeCodeProxy`.
+4. Merges two best-effort metadata hooks into your user-level Claude Code settings and adds the status-line publisher directly to a file-based PowerShell status-line script. This lets the dashboard display friendly session names and subagent types; existing hooks and visible status output are preserved.
+5. Registers an auto-start Windows service named `ClaudeCodeProxy`.
 
 The script starts the service automatically once it's registered. The service binds to `127.0.0.1:9996` (loopback only).
 
@@ -109,6 +110,7 @@ All configuration lives in `appsettings.json` next to the published binary (`%LO
 | `OutputPath` | `./stats` | Directory where daily stats files are written. `install.ps1` creates this under `%LOCALAPPDATA%\ClaudeCodeProxy\stats\`. |
 | `DayBoundaryTimeZone` | `America/New_York` | IANA time zone id the stats day boundary is evaluated in. Falls back to the server's local time zone (with a logged warning) if the configured id is invalid. |
 | `DayBoundaryTime` | `00:00:00` | Wall-clock time in `DayBoundaryTimeZone` where a new stats day begins. `00:00:00` (the default) means each stats day runs local midnight to midnight. A boundary of `20:00:00` would mean the period from 8 PM on day D to 8 PM on day D+1 is labeled D+1 (the day the period ends on). |
+| `MonthlyTargetSpendUsd` | `5500` | Monthly spending budget in USD. The stats dashboard divides it by the number of days in the current month to show the target daily spend. |
 
 ### `Serilog` section
 
@@ -202,9 +204,20 @@ The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
 
 Append `?provider=vertex` or `?provider=anthropic` to any HTML view to filter to just that upstream (buttons for this are also on the page itself); omit it to see both combined.
 
-Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown (annotated with provider when both are in use), an endpoint-routing breakdown (which upstream URLs actually received traffic), and hourly activity. When a rewrite failure mode has occurred (missing prompt file, unrecognized identity block, unknown request path, etc.), a dismissable banner surfaces it at the top of the page; dismissing posts to `/stats/dismiss/{mode}` and only re-appears if the failure count increases again.
+Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown (annotated with provider when both are in use), a Claude Code session breakdown, an endpoint-routing breakdown (which upstream URLs actually received traffic), and hourly activity. The session section nests subagents under their recorded parents and attributes their token usage and estimated cost separately; requests without `x-claude-code-session-id` appear as **Unattributed**. The existing provider filter applies to these session and agent totals too. When available, a friendly main-session title and subagent type appear above their full stored IDs. When a rewrite failure mode has occurred (missing prompt file, unrecognized identity block, unknown request path, etc.), a dismissable banner surfaces it at the top of the page; dismissing posts to `/stats/dismiss/{mode}` and only re-appears if the failure count increases again.
 
-Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. The "day" a request counts toward is controlled by `Stats:DayBoundaryTimeZone`/`Stats:DayBoundaryTime` (see [Configuration](#configuration)). Cost estimates use each model's standard rate (with any active promotional rate applied for the date being priced) from `src/ClaudeCodeProxy/pricing.json`, refreshed via the `update-pricing` Claude Code skill in `.claude/skills/update-pricing/`.
+Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. Session, agent, and parent-agent IDs are stored in full in those local files. Friendly metadata is separately stored as `session-metadata.json` in the same directory, so a later rename improves labels on historical views without changing cost data. Older stats files without header attribution are represented as Unattributed. The "day" a request counts toward is controlled by `Stats:DayBoundaryTimeZone`/`Stats:DayBoundaryTime` (see [Configuration](#configuration)). Cost estimates use each model's standard rate (with any active promotional rate applied for the date being priced) from `src/ClaudeCodeProxy/pricing.json`, refreshed via the `update-pricing` Claude Code skill in `.claude/skills/update-pricing/`.
+
+### Friendly Claude Code session labels
+
+`install.ps1` and `update.ps1` deploy scripts under `%LOCALAPPDATA%\ClaudeCodeProxy\claude-hooks\` and merge their entries into `%USERPROFILE%\.claude\settings.json`. They do not modify project settings. Before changing a status-line script or the settings file, the installer writes a complete copy to `%LOCALAPPDATA%\ClaudeCodeProxy\config-backups\claude-code-metadata\`. The integration sends only the opaque session/agent IDs, working directory, session title/name, and subagent type to the proxy's loopback-only `POST /internal/session-metadata` endpoint. It never sends prompts or transcript content.
+
+- `SessionStart` seeds a known session title and project context; `SubagentStart` associates a friendly agent type such as `Explore` or `Plan` with the agent ID.
+- Because Claude Code has no documented rename hook, the installer adds a small publisher directly to a file-based PowerShell status-line script. It observes the current `session_name`, including `/rename` and Claude-generated titles, while the script continues to render its normal output. A non-file-based custom status-line command is left unchanged and reported as unable to capture rename/title metadata.
+- The metadata request has a hard one-second timeout and every request, parse, cache, and persistence failure is ignored. The status-line publisher uses a per-session `%TEMP%` timestamp cache, so it sends at most one request per session per 30 seconds. The status line refreshes every 30 seconds to observe an idle rename.
+- The integration is best effort. If the proxy is stopped, metadata is unavailable, or Claude Code runs in safe mode, Claude Code continues normally and the dashboard falls back to raw IDs. If your organization enables `allowManagedHooksOnly`, the installer leaves the user hook configuration untouched and reports that a managed deployment is required.
+
+The endpoint accepts only small, validated metadata payloads and is bound to `127.0.0.1`; it must not be exposed through a reverse proxy or LAN binding.
 
 ## Service management
 

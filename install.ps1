@@ -142,6 +142,18 @@ if ($existingAppSettings) {
     Write-Host "  Stats.OutputPath     = $StatsPath"
 }
 
+# --- Configure global Claude Code metadata hooks ---
+$metadataHookInstaller = Join-Path $InstallDir "claude-hooks\install-claude-metadata-hooks.ps1"
+if (Test-Path $metadataHookInstaller) {
+    Write-Host "Configuring global Claude Code session metadata hooks..."
+    & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $metadataHookInstaller
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Claude Code session metadata hooks could not be configured. The proxy will continue with raw session IDs."
+    }
+} else {
+    Write-Warning "Session metadata hook installer was not published; friendly Claude Code labels are unavailable."
+}
+
 # --- Register service ---
 Write-Host "Registering service '$ServiceName'..."
 sc.exe create $ServiceName binPath= "`"$ExePath`"" DisplayName= "$DisplayName" start= auto

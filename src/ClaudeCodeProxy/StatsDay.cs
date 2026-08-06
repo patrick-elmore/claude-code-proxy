@@ -9,6 +9,7 @@ internal static class StatsDay
     {
         var zoned = TimeZoneInfo.ConvertTime(instant, timeZone);
         var date = DateOnly.FromDateTime(zoned.DateTime);
+        if (boundary == TimeSpan.Zero) return date;
         return zoned.TimeOfDay >= boundary ? date.AddDays(1) : date;
     }
 }

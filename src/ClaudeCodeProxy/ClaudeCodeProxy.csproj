@@ -18,6 +18,7 @@
   <ItemGroup>
     <Content Update="pricing.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\prompts\default.md" Link="prompts\default.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\claude-hooks\**\*" Link="claude-hooks\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

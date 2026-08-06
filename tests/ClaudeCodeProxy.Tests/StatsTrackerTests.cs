@@ -79,4 +79,84 @@ public sealed class StatsTrackerTests : IDisposable
         snapshot.AcknowledgedFailures[PromptFailureMode.PromptFileNotFound].ShouldBe(1);
         snapshot.AcknowledgedFailures[PromptFailureMode.NoBulkBlock].ShouldBe(0);
     }
+
+    [Fact]
+    public void SessionAndAgentAttribution_PersistedAndRestored()
+    {
+        var tracker = Build();
+        tracker.Record(Request("session-1", null, null, "vertex", input: 100, output: 10));
+        tracker.Record(Request("session-1", "agent-1", null, "vertex", input: 200, output: 20));
+        tracker.Record(Request("session-1", "agent-2", "agent-1", "anthropic", input: 300, output: 30));
+        tracker.RecordFailed(Request("session-1", "agent-2", "agent-1", "anthropic"));
+        tracker.Record(Request(null, null, null, "vertex", input: 400, output: 40));
+
+        var snapshot = tracker.GetSnapshot();
+        snapshot.Sessions.ShouldNotBeNull();
+        var sessions = snapshot.Sessions!;
+        var session = sessions.Single(s => s.SessionId == "session-1");
+        session.Requests.ShouldBe(3);
+        session.Failed.ShouldBe(1);
+        session.Totals.InputUncached.ShouldBe(600);
+        session.Agents.Single(a => a.AgentId is null).Totals.Output.ShouldBe(10);
+        var child = session.Agents.Single(a => a.AgentId == "agent-2");
+        child.ParentAgentId.ShouldBe("agent-1");
+        child.ByProvider["anthropic"].Requests.ShouldBe(1);
+        child.ByProvider["anthropic"].Failed.ShouldBe(1);
+        sessions.Single(s => s.SessionId is null).Totals.InputUncached.ShouldBe(400);
+
+        var restored = Build().GetSnapshot();
+        var restoredSessions = restored.Sessions!;
+        var restoredSession = restoredSessions.Single(s => s.SessionId == "session-1");
+        restoredSession.Agents.Single(a => a.AgentId == "agent-2").ParentAgentId.ShouldBe("agent-1");
+        restoredSessions.Single(s => s.SessionId is null).Totals.Output.ShouldBe(40);
+    }
+
+    [Fact]
+    public void LegacyStatsWithoutSessionData_AppearAsUnattributed()
+    {
+        var date = Build().GetSnapshot().Date.Replace("-", "");
+        var path = Path.Combine(_statsDir, $"stats-{date}.json");
+        File.WriteAllText(path, $$"""
+            {
+              "date": "{{date[..4]}}-{{date[4..6]}}-{{date[6..]}}",
+              "started_at": "2026-01-01T00:00:00+00:00",
+              "request_count": 1,
+              "failed_count": 0,
+              "totals": { "input_uncached": 123, "cache_read": 0, "cache_creation5m": 0, "cache_creation1h": 0, "output": 45 },
+              "total_duration_ms": 1,
+              "rewrite_failures": {},
+              "acknowledged_failures": {},
+              "unknown_paths": [],
+              "by_model": {
+                "vertex|test-model": {
+                  "requests": 1, "failed": 0, "input_uncached": 123, "cache_read": 0,
+                  "cache_creation5m": 0, "cache_creation1h": 0, "output": 45,
+                  "total_duration_ms": 1, "model": "test-model", "provider": "vertex"
+                }
+              },
+              "hourly": [],
+              "by_endpoint": {}
+            }
+            """);
+
+        var snapshot = Build().GetSnapshot();
+        snapshot.Sessions.ShouldNotBeNull();
+        var unattributed = snapshot.Sessions!.Single();
+        unattributed.SessionId.ShouldBeNull();
+        unattributed.Totals.InputUncached.ShouldBe(123);
+        unattributed.Agents.Single().ByProvider["vertex"].Output.ShouldBe(45);
+    }
+
+    private static RequestStats Request(string? sessionId, string? agentId, string? parentAgentId,
+        string provider, int input = 0, int output = 0) => new("test", DateTimeOffset.UtcNow)
+    {
+        SessionId = sessionId,
+        AgentId = agentId,
+        ParentAgentId = parentAgentId,
+        Provider = provider,
+        Model = "test-model",
+        InputUncached = input,
+        OutputTokens = output,
+        DurationMs = 1,
+    };
 }

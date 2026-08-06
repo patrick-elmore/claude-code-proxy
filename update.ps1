@@ -109,6 +109,18 @@ if (($liveConfig.Proxy.PromptFilePath -replace '\\', '/') -eq $repoPrompt) {
 $liveConfig | ConvertTo-Json -Depth 10 | Set-Content $AppSettings -Encoding UTF8
 Write-Host "Config merge complete."
 
+# --- Refresh global Claude Code metadata hooks ---
+$metadataHookInstaller = Join-Path $InstallDir "claude-hooks\install-claude-metadata-hooks.ps1"
+if (Test-Path $metadataHookInstaller) {
+    Write-Host "Refreshing global Claude Code session metadata hooks..."
+    & pwsh.exe -NoProfile -ExecutionPolicy Bypass -File $metadataHookInstaller
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Claude Code session metadata hooks could not be refreshed. The proxy will continue with raw session IDs."
+    }
+} else {
+    Write-Warning "Session metadata hook installer was not published; friendly Claude Code labels are unavailable."
+}
+
 # --- Start service ---
 if ($service) {
     Write-Host "Starting service '$ServiceName'..."

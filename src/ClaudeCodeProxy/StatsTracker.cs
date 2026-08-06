@@ -29,7 +29,9 @@ public sealed class StatsTracker
     private const int MaxUnknownPaths = 20;
     private readonly Dictionary<string, ModelBucket> _byModel = new();
     private readonly Dictionary<string, EndpointBucket> _byEndpoint = new();
+    private readonly Dictionary<string, SessionBucket> _bySession = new();
     private readonly ConcurrentDictionary<DateTimeOffset, HourlyBucket> _hourly = new();
+    private const string UnattributedSessionKey = "";
 
     private static readonly JsonSerializerOptions WriteOpts = new()
     {
@@ -116,6 +118,8 @@ public sealed class StatsTracker
                 pb.TotalDurationMs += stats.DurationMs;
             }
 
+            RecordSession(stats, hasUsage: true);
+
             PersistToDisk();
         }
     }
@@ -154,6 +158,8 @@ public sealed class StatsTracker
                 pb.FailedCount++;
                 pb.TotalDurationMs += stats.DurationMs;
             }
+
+            RecordSession(stats, hasUsage: false);
 
             PersistToDisk();
         }
@@ -266,7 +272,8 @@ public sealed class StatsTracker
                         )),
                 ByEndpoint: (file.ByEndpoint ?? []).ToDictionary(
                     kvp => kvp.Key,
-                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider))
+                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider)),
+                Sessions: BuildSessionSnapshots(file.BySession ?? BuildLegacyUnattributedSession(file))
             );
         }
         catch (Exception ex)
@@ -381,7 +388,8 @@ public sealed class StatsTracker
                         )),
                 ByEndpoint: _byEndpoint.ToDictionary(
                     kvp => kvp.Key,
-                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider))
+                    kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider)),
+                Sessions: BuildSessionSnapshots(_bySession)
             );
         }
     }
@@ -420,6 +428,164 @@ public sealed class StatsTracker
         }
     }
 
+    private void RecordSession(RequestStats stats, bool hasUsage)
+    {
+        var sessionKey = stats.SessionId ?? UnattributedSessionKey;
+        if (!_bySession.TryGetValue(sessionKey, out var session))
+            _bySession[sessionKey] = session = new SessionBucket { SessionId = stats.SessionId };
+
+        var agentKey = stats.AgentId ?? "";
+        if (!session.Agents.TryGetValue(agentKey, out var agent))
+        {
+            session.Agents[agentKey] = agent = new AgentBucket
+            {
+                AgentId = stats.AgentId,
+                ParentAgentId = stats.AgentId is null ? null : stats.ParentAgentId,
+            };
+        }
+        else if (agent.ParentAgentId is null && stats.AgentId is not null && stats.ParentAgentId is not null)
+        {
+            // A later request can provide a parent that was absent from an earlier one; retain it.
+            agent.ParentAgentId = stats.ParentAgentId;
+        }
+
+        if (hasUsage)
+        {
+            agent.Requests++;
+            agent.InputUncached += stats.InputUncached;
+            agent.CacheRead += stats.CacheRead;
+            agent.CacheCreation5m += stats.CacheCreation5m;
+            agent.CacheCreation1h += stats.CacheCreation1h;
+            agent.Output += stats.OutputTokens;
+        }
+        else
+        {
+            agent.Failed++;
+        }
+        agent.TotalDurationMs += stats.DurationMs;
+
+        if (stats.Model is not null)
+        {
+            var model = GetOrAddAgentModel(agent, stats.Model, stats.Provider);
+            if (hasUsage)
+            {
+                model.Requests++;
+                model.InputUncached += stats.InputUncached;
+                model.CacheRead += stats.CacheRead;
+                model.CacheCreation5m += stats.CacheCreation5m;
+                model.CacheCreation1h += stats.CacheCreation1h;
+                model.Output += stats.OutputTokens;
+            }
+            else
+            {
+                model.Failed++;
+            }
+            model.TotalDurationMs += stats.DurationMs;
+        }
+
+        if (stats.Provider is not null)
+        {
+            if (!agent.ByProvider.TryGetValue(stats.Provider, out var provider))
+                agent.ByProvider[stats.Provider] = provider = new ProviderSessionBucket();
+            if (hasUsage)
+            {
+                provider.Requests++;
+                provider.InputUncached += stats.InputUncached;
+                provider.CacheRead += stats.CacheRead;
+                provider.CacheCreation5m += stats.CacheCreation5m;
+                provider.CacheCreation1h += stats.CacheCreation1h;
+                provider.Output += stats.OutputTokens;
+            }
+            else
+            {
+                provider.Failed++;
+            }
+        }
+    }
+
+    private static ModelBucket GetOrAddAgentModel(AgentBucket agent, string model, string? provider)
+    {
+        var key = $"{provider}|{model}";
+        if (!agent.ByModel.TryGetValue(key, out var bucket))
+            agent.ByModel[key] = bucket = new ModelBucket { Model = model, Provider = provider };
+        return bucket;
+    }
+
+    private static IReadOnlyList<SessionSnapshot> BuildSessionSnapshots(IReadOnlyDictionary<string, SessionBucket> sessions) =>
+        sessions.Values.Select(session =>
+        {
+            var agents = session.Agents.Values.Select(agent =>
+            {
+                var models = agent.ByModel.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => ToModelSnapshot(kvp.Value));
+                var providers = agent.ByProvider.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new ProviderTotals(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.InputUncached,
+                        kvp.Value.CacheRead, kvp.Value.CacheCreation5m, kvp.Value.CacheCreation1h, kvp.Value.Output));
+                return new AgentSnapshot(agent.AgentId, agent.ParentAgentId, agent.Requests, agent.Failed,
+                    new TokenTotals(agent.InputUncached, agent.CacheRead, agent.CacheCreation5m, agent.CacheCreation1h, agent.Output),
+                    models, providers);
+            }).ToList();
+            return new SessionSnapshot(session.SessionId,
+                agents.Sum(a => a.Requests), agents.Sum(a => a.Failed),
+                new TokenTotals(agents.Sum(a => a.Totals.InputUncached), agents.Sum(a => a.Totals.CacheRead),
+                    agents.Sum(a => a.Totals.CacheCreation5m), agents.Sum(a => a.Totals.CacheCreation1h), agents.Sum(a => a.Totals.Output)),
+                agents);
+        }).ToList();
+
+    private static ModelSnapshot ToModelSnapshot(ModelBucket mb)
+    {
+        var cacheCreation = mb.CacheCreation5m + mb.CacheCreation1h;
+        var totalInput = mb.InputUncached + mb.CacheRead + cacheCreation;
+        var hitRate = totalInput > 0 ? 100.0 * mb.CacheRead / totalInput : 0;
+        var requests = mb.Requests + mb.Failed;
+        var avgDuration = requests > 0 ? (double)mb.TotalDurationMs / requests : 0;
+        return new ModelSnapshot(mb.Model, mb.Requests, mb.Failed, mb.InputUncached, mb.CacheRead,
+            mb.CacheCreation5m, mb.CacheCreation1h, mb.Output, Math.Round(hitRate, 1), Math.Round(avgDuration, 0), mb.Provider);
+    }
+
+    // Older daily files predate header tracking; their complete totals become one Unattributed bucket.
+    private static Dictionary<string, SessionBucket> BuildLegacyUnattributedSession(FileSnapshot file)
+    {
+        if (file.RequestCount == 0 && file.FailedCount == 0) return [];
+
+        var agent = new AgentBucket
+        {
+            Requests = file.RequestCount,
+            Failed = file.FailedCount,
+            InputUncached = file.Totals.InputUncached,
+            CacheRead = file.Totals.CacheRead,
+            CacheCreation5m = file.Totals.CacheCreation5m,
+            CacheCreation1h = file.Totals.CacheCreation1h,
+            Output = file.Totals.Output,
+            TotalDurationMs = file.TotalDurationMs,
+            ByModel = new Dictionary<string, ModelBucket>(file.ByModel),
+        };
+        foreach (var model in agent.ByModel.Values.Where(m => m.Provider is not null))
+        {
+            var providerKey = model.Provider!;
+            if (!agent.ByProvider.TryGetValue(providerKey, out var provider))
+                agent.ByProvider[providerKey] = provider = new ProviderSessionBucket();
+            provider.Requests += model.Requests;
+            provider.Failed += model.Failed;
+            provider.InputUncached += model.InputUncached;
+            provider.CacheRead += model.CacheRead;
+            provider.CacheCreation5m += model.CacheCreation5m;
+            provider.CacheCreation1h += model.CacheCreation1h;
+            provider.Output += model.Output;
+        }
+
+        return new Dictionary<string, SessionBucket>
+        {
+            [UnattributedSessionKey] = new SessionBucket
+            {
+                SessionId = null,
+                Agents = new Dictionary<string, AgentBucket> { [""] = agent },
+            }
+        };
+    }
+
     private static Dictionary<PromptFailureMode, long> InitFailures() =>
         Enum.GetValues<PromptFailureMode>().ToDictionary(m => m, _ => 0L);
 
@@ -452,6 +618,7 @@ public sealed class StatsTracker
         _unknownPaths.Clear();
         _byModel.Clear();
         _byEndpoint.Clear();
+        _bySession.Clear();
         _hourly.Clear();
     }
 
@@ -518,6 +685,9 @@ public sealed class StatsTracker
 
             foreach (var (url, eb) in snapshot.ByEndpoint ?? [])
                 _byEndpoint[url] = eb;
+
+            foreach (var (session, bucket) in snapshot.BySession ?? BuildLegacyUnattributedSession(snapshot))
+                _bySession[session] = bucket;
 
             foreach (var h in snapshot.Hourly)
             {
@@ -598,7 +768,8 @@ public sealed class StatsTracker
             })
             .OrderByDescending(h => h.Hour)
             .ToList(),
-        ByEndpoint: new Dictionary<string, EndpointBucket>(_byEndpoint)
+        ByEndpoint: new Dictionary<string, EndpointBucket>(_byEndpoint),
+        BySession: new Dictionary<string, SessionBucket>(_bySession)
     );
 
     private string FilePath(DateOnly date) =>
@@ -619,7 +790,8 @@ public sealed class StatsTracker
         List<string> UnknownPaths,
         Dictionary<string, ModelBucket> ByModel,
         List<HourlyFileEntry> Hourly,
-        Dictionary<string, EndpointBucket>? ByEndpoint
+        Dictionary<string, EndpointBucket>? ByEndpoint,
+        Dictionary<string, SessionBucket>? BySession = null
     );
 
     private sealed record HourlyFileEntry(
@@ -651,6 +823,39 @@ public sealed class StatsTracker
         public long Requests { get; set; }
         public long Failed { get; set; }
         public string? Provider { get; set; }
+    }
+
+    private sealed class SessionBucket
+    {
+        public string? SessionId { get; set; }
+        public Dictionary<string, AgentBucket> Agents { get; set; } = new();
+    }
+
+    private sealed class AgentBucket
+    {
+        public string? AgentId { get; set; }
+        public string? ParentAgentId { get; set; }
+        public long Requests { get; set; }
+        public long Failed { get; set; }
+        public long InputUncached { get; set; }
+        public long CacheRead { get; set; }
+        public long CacheCreation5m { get; set; }
+        public long CacheCreation1h { get; set; }
+        public long Output { get; set; }
+        public long TotalDurationMs { get; set; }
+        public Dictionary<string, ModelBucket> ByModel { get; set; } = new();
+        public Dictionary<string, ProviderSessionBucket> ByProvider { get; set; } = new();
+    }
+
+    private sealed class ProviderSessionBucket
+    {
+        public long Requests { get; set; }
+        public long Failed { get; set; }
+        public long InputUncached { get; set; }
+        public long CacheRead { get; set; }
+        public long CacheCreation5m { get; set; }
+        public long CacheCreation1h { get; set; }
+        public long Output { get; set; }
     }
 
     private sealed class ModelBucket
@@ -708,7 +913,8 @@ public sealed record StatsSnapshot(
     IReadOnlyDictionary<string, ModelSnapshot> ByModel,
     IReadOnlyList<HourlyStats> Hourly,
     IReadOnlyDictionary<string, ProviderTotals> ByProvider,
-    IReadOnlyDictionary<string, EndpointSnapshot> ByEndpoint
+    IReadOnlyDictionary<string, EndpointSnapshot> ByEndpoint,
+    IReadOnlyList<SessionSnapshot>? Sessions = null
 );
 
 public sealed record TokenTotals(
@@ -783,5 +989,23 @@ public sealed record ProviderTotals(
 {
     public long CacheCreation => CacheCreation5m + CacheCreation1h;
 }
+
+public sealed record SessionSnapshot(
+    string? SessionId,
+    long Requests,
+    long Failed,
+    TokenTotals Totals,
+    IReadOnlyList<AgentSnapshot> Agents
+);
+
+public sealed record AgentSnapshot(
+    string? AgentId,
+    string? ParentAgentId,
+    long Requests,
+    long Failed,
+    TokenTotals Totals,
+    IReadOnlyDictionary<string, ModelSnapshot> ByModel,
+    IReadOnlyDictionary<string, ProviderTotals> ByProvider
+);
 
 public sealed record EndpointSnapshot(long Requests, long Failed, string? Provider);
