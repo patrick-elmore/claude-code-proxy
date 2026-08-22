@@ -12,7 +12,21 @@ dotnet.exe build src/ClaudeCodeProxy/ClaudeCodeProxy.csproj
 dotnet.exe build src/ClaudeCodeProxy/ClaudeCodeProxy.csproj -c Release
 ```
 
-There are no tests. The solution file is `ClaudeCodeProxy.slnx`.
+The solution file is `ClaudeCodeProxy.slnx`.
+
+## Tests
+
+- `tests/ClaudeCodeProxy.Tests` contains unit tests.
+- `tests/ClaudeCodeProxy.IntegrationTests` contains Razor endpoint integration
+  tests using `WebApplicationFactory` and AngleSharp.
+
+```powershell
+# Debug
+dotnet.exe test ClaudeCodeProxy.slnx
+
+# Release
+dotnet.exe test ClaudeCodeProxy.slnx -c Release
+```
 
 ## Deployment
 
