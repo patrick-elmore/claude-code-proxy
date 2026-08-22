@@ -98,6 +98,20 @@ public sealed class StatsTrackerTests : IDisposable
     }
 
     [Fact]
+    public void GetSnapshot_AfterStatsDayChanges_ReturnsEmptyCurrentDay()
+    {
+        var tracker = Build();
+        tracker.Record(Request(null, null, null, "vertex", input: 1_000_000));
+        var today = tracker.ComputeCurrentStatsDay();
+        tracker._currentDate = today.AddDays(-1);
+
+        var snapshot = tracker.GetSnapshot();
+
+        (snapshot.Date, snapshot.RequestCount, snapshot.ByModel.Count)
+            .ShouldBe((today.ToString("yyyy-MM-dd"), 0L, 0));
+    }
+
+    [Fact]
     public void SessionAndAgentAttribution_PersistedAndRestored()
     {
         var tracker = Build();

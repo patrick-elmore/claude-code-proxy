@@ -13,7 +13,7 @@ public sealed class StatsTracker
     private readonly ILogger<StatsTracker> _logger;
     private readonly Lock _lock = new();
 
-    private DateOnly _currentDate;
+    internal DateOnly _currentDate;
     private DateTimeOffset _startedAt;
     private long _requestCount;
     private long _failedCount;
@@ -172,6 +172,7 @@ public sealed class StatsTracker
     {
         lock (_lock)
         {
+            MaybeRollover();
             if (date == _currentDate) return GetSnapshot();
         }
 
@@ -306,6 +307,7 @@ public sealed class StatsTracker
     {
         lock (_lock)
         {
+            MaybeRollover();
             var totalCacheCreation = _totalCacheCreation5m + _totalCacheCreation1h;
             var totalIn = _totalInputUncached + _totalCacheRead + totalCacheCreation;
             var hitPct = totalIn > 0 ? 100.0 * _totalCacheRead / totalIn : 0;
