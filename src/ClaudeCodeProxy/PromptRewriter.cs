@@ -39,6 +39,14 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         // max_tokens:1 is Claude Code's model-availability probe — nothing to inject.
         if (body["max_tokens"]?.GetValue<int>() == 1) return RewriteOutcome.NotApplicable;
 
+        var (bulkBlock, identityFound, bulkIndex) = FindBulkBlock(system);
+        if (!identityFound)
+        {
+            logger.LogWarning(
+                "No known Claude Code identity block found in system[] — passing through unchanged. The CLI may have updated its identity strings; update KnownIdentityPrefixes in PromptRewriter.cs if needed.");
+            return RewriteOutcome.Failure(PromptFailureMode.IdentityNotRecognized);
+        }
+
         var promptPath = options.CurrentValue.PromptFilePath;
         if (string.IsNullOrWhiteSpace(promptPath))
         {
@@ -54,30 +62,18 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             return RewriteOutcome.Failure(PromptFailureMode.PromptFileNotFound);
         }
 
-        var (bulkBlock, identityFound, bulkIndex) = FindBulkBlock(system);
-        var identityNotRecognized = !identityFound;
-
-        if (identityNotRecognized)
-            logger.LogWarning(
-                "No known Claude Code identity block found in system[] — the CLI may have updated its identity strings. Update KnownIdentityPrefixes in PromptRewriter.cs.");
-
         if (bulkBlock is null)
         {
             // Known identity block(s) only — agent SDK sub-agent with no behavioral prompt to replace.
-            if (identityFound)
-            {
-                logger.LogDebug("No bulk system block found but identity recognized — agent SDK sub-agent, skipping injection");
-                return RewriteOutcome.NotApplicable;
-            }
-            logger.LogDebug("No bulk system block found — passthrough (proactive mode or unusual shape)");
-            return RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock, identityNotRecognized);
+            logger.LogDebug("No bulk system block found but identity recognized — agent SDK sub-agent, skipping injection");
+            return RewriteOutcome.NotApplicable;
         }
 
         var bulkText = bulkBlock["text"]?.GetValue<string>();
         if (bulkText is null)
         {
             logger.LogDebug("Bulk block has no text field — passthrough");
-            return RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock, identityNotRecognized);
+            return RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock);
         }
 
         // Read and prepare the custom prompt — shared by both injection strategies below.
@@ -96,7 +92,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             catch (Exception ex)
             {
                 logger.LogWarning(ex, "Failed to read prompt file at {Path} — passthrough", promptPath);
-                return RewriteOutcome.Failure(PromptFailureMode.PromptFileReadError, identityNotRecognized);
+                return RewriteOutcome.Failure(PromptFailureMode.PromptFileReadError);
             }
         }
 
@@ -118,7 +114,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
             // a new block before the role block rather than replacing within it.
             system.Insert(bulkIndex, new JsonObject { ["type"] = "text", ["text"] = customPrompt });
             logger.LogDebug("Injected custom prompt as new block at index {Index} (no boundary marker found)", bulkIndex);
-            return RewriteOutcome.Success(identityNotRecognized);
+            return RewriteOutcome.Success();
         }
 
         var dynamicPortion = bulkText[boundaryIndex..];
@@ -127,7 +123,7 @@ public sealed class PromptRewriter(IOptionsMonitor<ProxyOptions> options, ILogge
         logger.LogDebug(
             "Mutated bulk block: replaced {OldStaticLen} chars before {Marker} with {NewStaticLen} chars from {Path}",
             boundaryIndex, marker.Trim(), customPrompt.Length, promptPath);
-        return RewriteOutcome.Success(identityNotRecognized);
+        return RewriteOutcome.Success();
     }
 
     private static (JsonObject? bulk, bool identityFound, int bulkIndex) FindBulkBlock(JsonArray system)

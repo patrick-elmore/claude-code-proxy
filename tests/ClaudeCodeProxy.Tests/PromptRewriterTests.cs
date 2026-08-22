@@ -98,12 +98,12 @@ public sealed class PromptRewriterTests : IDisposable
         var result = await rewriter.RewriteAsync(node);
 
         result.Mutated.ShouldBeFalse();
-        result.FailureMode.ShouldBe(PromptFailureMode.NoBulkBlock);
+        result.FailureMode.ShouldBeNull();
         result.IdentityNotRecognized.ShouldBeFalse();
     }
 
     [Fact]
-    public async Task OnlyAttributionBlock_NoBulkBlock()
+    public async Task OnlyAttributionBlock_IdentityNotRecognized()
     {
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
@@ -113,11 +113,11 @@ public sealed class PromptRewriterTests : IDisposable
         var result = await rewriter.RewriteAsync(node);
 
         result.Mutated.ShouldBeFalse();
-        result.FailureMode.ShouldBe(PromptFailureMode.NoBulkBlock);
+        result.FailureMode.ShouldBe(PromptFailureMode.IdentityNotRecognized);
     }
 
     [Fact]
-    public async Task NoBoundaryMarker_InjectsAsNewBlock()
+    public async Task MissingIdentityBlock_PassesThroughUnchanged()
     {
         var rewriter = BuildRewriter("custom prompt");
         var node = Parse("""
@@ -129,12 +129,11 @@ public sealed class PromptRewriterTests : IDisposable
 
         var result = await rewriter.RewriteAsync(node);
 
-        result.Mutated.ShouldBeTrue();
-        result.FailureMode.ShouldBeNull();
+        result.Mutated.ShouldBeFalse();
+        result.FailureMode.ShouldBe(PromptFailureMode.IdentityNotRecognized);
         var arr = node["system"]!.AsArray();
-        arr.Count.ShouldBe(3); // attribution + injected prompt + original bulk
-        arr[1]!["text"]!.GetValue<string>().ShouldBe("custom prompt");
-        arr[2]!["text"]!.GetValue<string>().ShouldBe("bulk content without any known boundary marker here");
+        arr.Count.ShouldBe(2);
+        arr[1]!["text"]!.GetValue<string>().ShouldBe("bulk content without any known boundary marker here");
     }
 
     [Fact]
@@ -218,7 +217,7 @@ public sealed class PromptRewriterTests : IDisposable
         var result = await rewriter.RewriteAsync(node);
 
         result.Mutated.ShouldBeTrue();
-        result.IdentityNotRecognized.ShouldBeTrue(); // no identity block in single-block fixture
+        result.IdentityNotRecognized.ShouldBeFalse();
         BulkText(node).ShouldBe("custom prompt\n# Session-specific guidance\ndynamic content");
     }
 
@@ -272,6 +271,7 @@ public sealed class PromptRewriterTests : IDisposable
         var node = Parse("""
             {"system": [
                 {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
                 {"type": "text", "text": "short block\n# Session-specific guidance\ndynamic"},
                 {"type": "text", "text": "this is the longer block that should be chosen as bulk\n# Session-specific guidance\ndynamic"}
             ]}
@@ -281,8 +281,8 @@ public sealed class PromptRewriterTests : IDisposable
 
         result.Mutated.ShouldBeTrue();
         var arr = node["system"]!.AsArray();
-        arr[1]!["text"]!.GetValue<string>().ShouldBe("short block\n# Session-specific guidance\ndynamic");
-        arr[2]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
+        arr[2]!["text"]!.GetValue<string>().ShouldBe("short block\n# Session-specific guidance\ndynamic");
+        arr[3]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
     }
 
     [Fact]
@@ -292,6 +292,7 @@ public sealed class PromptRewriterTests : IDisposable
         var node = Parse("""
             {"system": [
                 {"type": "text", "text": "x-anthropic-billing-header cc_version=test"},
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
                 {"type": "text", "text": "static content\n# Session-specific guidance\ndynamic"}
             ]}
             """);
@@ -301,7 +302,7 @@ public sealed class PromptRewriterTests : IDisposable
         result.Mutated.ShouldBeTrue();
         var arr = node["system"]!.AsArray();
         arr[0]!["text"]!.GetValue<string>().ShouldStartWith("x-anthropic-billing-header");
-        arr[1]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
+        arr[2]!["text"]!.GetValue<string>().ShouldBe("custom prompt\n# Session-specific guidance\ndynamic");
     }
 
     [Fact]
@@ -347,6 +348,7 @@ public sealed class PromptRewriterTests : IDisposable
             ["system"] = new JsonArray
             {
                 new JsonObject { ["type"] = "text", ["text"] = "x-anthropic-billing-header cc_version=test" },
+                new JsonObject { ["type"] = "text", ["text"] = "You are Claude Code, Anthropic's official CLI for Claude." },
                 new JsonObject { ["type"] = "text", ["text"] = text }
             }
         };

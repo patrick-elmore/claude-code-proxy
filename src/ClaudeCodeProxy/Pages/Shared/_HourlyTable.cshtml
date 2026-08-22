@@ -1,0 +1,18 @@
+@model IReadOnlyList<BetaHourlyRowViewModel>
+
+@if (Model.Count > 0)
+{
+    <section data-stats-section="hours">
+        <h2>Hourly</h2>
+        <div class="table-wrap"><table>
+            <thead><tr><th scope="col">hour</th><th scope="col" class="num">requests</th><th scope="col" class="num">failed</th><th scope="col" class="num">hit %</th><th scope="col" class="num">avg ms</th><th scope="col" class="num">cache read</th><th scope="col" class="num">cache create</th><th scope="col" class="num">uncached</th><th scope="col" class="num">output</th><th scope="col" class="num">cost*</th></tr></thead>
+            <tbody>
+            @foreach (var row in Model)
+            {
+                <tr><td>@row.Hour</td><td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td><td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td><td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs)</td><td class="num">@BetaStatsDisplay.Number(row.CacheRead)</td><td class="num">@BetaStatsDisplay.Number(row.CacheCreation)</td><td class="num">@BetaStatsDisplay.Number(row.InputUncached)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td></tr>
+            }
+            </tbody>
+        </table></div>
+        <p class="muted">* hourly cost uses today's by-model token mix as a blended rate; per-hour exact cost would require per-model hourly tracking.</p>
+    </section>
+}

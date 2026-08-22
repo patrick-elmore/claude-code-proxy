@@ -1,0 +1,17 @@
+@model BetaStatsPageViewModel
+
+@if (Model.Endpoints.Count > 0)
+{
+    <section data-stats-section="endpoints">
+        <h2>Endpoint routing</h2>
+        <div class="table-wrap"><table>
+            <thead><tr>@if (Model.Provider is null){<th scope="col">provider</th>}<th scope="col">endpoint</th><th scope="col" class="num">requests</th><th scope="col" class="num">failed</th></tr></thead>
+            <tbody>
+            @foreach (var row in Model.Endpoints)
+            {
+                <tr>@if (Model.Provider is null){<td>@(row.Provider ?? "—")</td>}<td class="mono">@row.Endpoint</td><td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td></tr>
+            }
+            </tbody>
+        </table></div>
+    </section>
+}

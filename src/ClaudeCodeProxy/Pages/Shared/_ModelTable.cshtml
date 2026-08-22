@@ -1,0 +1,29 @@
+@model BetaStatsPageViewModel
+
+@if (Model.Models.Count > 0)
+{
+    <section data-stats-section="models">
+        <h2>By model</h2>
+        <div class="table-wrap"><table>
+            <thead><tr>
+                <th scope="col">model</th><th scope="col" class="num">requests</th><th scope="col" class="num">failed</th><th scope="col" class="num">hit %</th>
+                @if (!Model.IsRange){<th scope="col" class="num">avg ms</th>}
+                <th scope="col" class="num">cache read</th><th scope="col" class="num">cache create</th><th scope="col" class="num">uncached</th><th scope="col" class="num">output</th><th scope="col" class="num">cost</th>
+            </tr></thead>
+            <tbody>
+            @foreach (var row in Model.Models)
+            {
+                <tr>
+                    <td class="mono">@row.Model@if (Model.Provider is null && row.Provider is not null){<span class="muted"> (@row.Provider)</span>}</td>
+                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td>
+                    <td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
+                    <td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td>
+                    @if (!Model.IsRange){<td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs ?? 0)</td>}
+                    <td class="num">@BetaStatsDisplay.Number(row.CacheRead)</td><td class="num">@BetaStatsDisplay.Number(row.CacheCreation)</td>
+                    <td class="num">@BetaStatsDisplay.Number(row.InputUncached)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                </tr>
+            }
+            </tbody>
+        </table></div>
+    </section>
+}

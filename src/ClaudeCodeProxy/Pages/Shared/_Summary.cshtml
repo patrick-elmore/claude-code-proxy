@@ -1,0 +1,14 @@
+@model BetaStatsPageViewModel
+
+<section data-stats-section="summary">
+    <h2>@Model.SummaryTitle</h2>
+    <div class="pair" data-stat="requests"><span class="k">requests</span><span class="v">@BetaStatsDisplay.Number(Model.Summary.Requests)</span>@if (Model.Summary.Failed > 0){<span class="muted err"> (@BetaStatsDisplay.Number(Model.Summary.Failed) failed)</span>}</div>
+    <div class="pair" data-stat="injected"><span class="k">requests injected</span><span class="v">@BetaStatsDisplay.Number(Model.Summary.InjectedRequests)</span>@if (Model.Summary.PromptCountsAreGlobal){<span class="muted"> (all providers)</span>}</div>
+    <div class="pair" data-stat="passed-through"><span class="k">requests passed through</span><span class="v">@BetaStatsDisplay.Number(Model.Summary.PassedThroughRequests)</span>@if (Model.Summary.PromptCountsAreGlobal){<span class="muted"> (all providers)</span>}</div>
+    <div class="pair" data-stat="hit-rate"><span class="k">cache hit rate</span><span class="v @BetaStatsDisplay.HitClass(Model.Summary.HitRatePct)">@BetaStatsDisplay.Percent(Model.Summary.HitRatePct)</span> <span class="muted">on @BetaStatsDisplay.Number(Model.Summary.InputTokens) input tokens</span></div>
+    @if (Model.Summary.AvgDurationMs.HasValue)
+    {
+        <div class="pair" data-stat="avg-latency"><span class="k">avg latency</span><span class="v">@BetaStatsDisplay.Milliseconds(Model.Summary.AvgDurationMs.Value) ms</span></div>
+    }
+    <div class="pair" data-stat="total-cost"><span class="k">total cost</span><span class="v cost">@BetaStatsDisplay.Money(Model.Summary.TotalCost)</span></div>
+</section>

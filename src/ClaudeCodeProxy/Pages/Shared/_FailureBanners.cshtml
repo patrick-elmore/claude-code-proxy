@@ -1,0 +1,53 @@
+@model IReadOnlyList<BetaFailureBannerViewModel>
+
+@foreach (var banner in Model)
+{
+    var requestWord = banner.Count == 1 ? "request" : "requests";
+    <div class="failure-warn" data-failure-mode="@banner.Mode">
+        <div class="failure-message">
+            <span aria-hidden="true">&#9888;</span>
+            <div class="failure-copy">
+                <strong>@BetaStatsDisplay.Number(banner.Count) @requestWord</strong>
+                @switch (banner.Mode)
+                {
+                    case PromptFailureMode.UnknownPath:
+                        <text> forwarded without prompt injection &mdash; path not recognised as a model API call.</text>
+                        <ul>
+                            @foreach (var path in banner.UnknownPaths)
+                            {
+                                <li><code>@path</code></li>
+                            }
+                        </ul>
+                        break;
+                    case PromptFailureMode.PromptNotConfigured:
+                        <text> passed through unmodified &mdash; <code>Proxy:PromptFilePath</code> is not configured in <code>appsettings.json</code>.</text>
+                        break;
+                    case PromptFailureMode.PromptFileNotFound:
+                        <text> passed through unmodified &mdash; prompt file not found on disk. Check <code>Proxy:PromptFilePath</code> in <code>appsettings.json</code>.</text>
+                        break;
+                    case PromptFailureMode.PromptFileReadError:
+                        <text> passed through unmodified &mdash; prompt file became unreadable during the request (I/O error). Check file permissions and disk health.</text>
+                        break;
+                    case PromptFailureMode.NoBulkBlock:
+                        <text> passed through unmodified &mdash; no bulk system block found. Claude Code&rsquo;s request shape may have changed.</text>
+                        break;
+                    case PromptFailureMode.NoBoundaryMarker:
+                        <text> passed through unmodified &mdash; bulk block found but no dynamic boundary marker present. Claude Code&rsquo;s prompt structure may have changed.</text>
+                        break;
+                    case PromptFailureMode.IdentityNotRecognized:
+                        <text> passed through unchanged because no recognized Claude Code identity block was present. If this was normal Claude Code traffic, update <code>KnownIdentityPrefixes</code> in <code>PromptRewriter.cs</code>.</text>
+                        break;
+                    case PromptFailureMode.UnhandledException:
+                        <text> passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.</text>
+                        break;
+                    default:
+                        <text> encountered rewrite failure: @banner.Mode.</text>
+                        break;
+                }
+            </div>
+        </div>
+        <form method="post" asp-page="/Beta/Stats/Dismiss" asp-route-mode="@banner.Mode">
+            <button type="submit" class="dismiss-btn">Dismiss</button>
+        </form>
+    </div>
+}

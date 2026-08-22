@@ -151,10 +151,11 @@ For each inbound request that carries a `system[]` array — Vertex's `POST /pro
    - Block starting with `x-anthropic-billing-header` → preserved (attribution).
    - Block matching one of the known Claude Code identity-prefix strings → preserved.
    - The longest remaining block → the bulk block.
-3. If no bulk block is found but an identity block was recognized (an agent-SDK sub-agent request with no behavioral prompt of its own), the request is left alone — nothing to replace.
-4. Otherwise, within the bulk block, it searches for the first occurrence of `\n# Session-specific guidance\n` (with `\n# auto memory\n` and `\n# Environment\n` as fallbacks).
-5. Everything **before** that boundary is replaced with the custom prompt; everything from the boundary onward is preserved verbatim. If no boundary is found at all (e.g. a genuine sub-agent or custom-prompted request), the custom prompt is inserted as a new block instead of replacing text in place.
-6. The mutated body is forwarded to the configured upstream (Vertex or Anthropic, depending on the path and whether `Proxy:AnthropicBaseUrl` is set) with the original auth header attached.
+3. If no known identity block is present, the request is passed through unchanged. This excludes Claude Code auxiliary traffic such as Agent View status summaries and safely handles future unknown request shapes.
+4. If no bulk block is found but an identity block was recognized (an agent-SDK sub-agent request with no behavioral prompt of its own), the request is left alone — nothing to replace.
+5. Otherwise, within the bulk block, it searches for the first occurrence of `\n# Session-specific guidance\n` (with `\n# auto memory\n` and `\n# Environment\n` as fallbacks).
+6. Everything **before** that boundary is replaced with the custom prompt; everything from the boundary onward is preserved verbatim. If no boundary is found at all (e.g. a genuine sub-agent or custom-prompted request), the custom prompt is inserted as a new block instead of replacing text in place.
+7. The mutated body is forwarded to the configured upstream (Vertex or Anthropic, depending on the path and whether `Proxy:AnthropicBaseUrl` is set) with the original auth header attached.
 
 If any condition is unmet (no `system` field, body isn't JSON, no boundary marker, prompt file missing, etc.), the proxy forwards the request unmodified — fail-safe to transparent passthrough. The [stats dashboard](#stats-dashboard) surfaces these as dismissable failure banners so you notice when rewriting silently stops happening.
 
@@ -193,6 +194,11 @@ Two diagnostic-only tools help debug enterprise auth handshakes when standing up
 
 The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
 
+A separate Razor Pages rewrite is available for evaluation at
+`http://localhost:9996/beta/stats`. Its day, week, month, provider-filter, and
+dismiss routes all remain beneath `/beta/stats*`; the existing `/stats*`
+dashboard remains the default and is not backed by the beta renderer.
+
 | Endpoint | Description |
 |---|---|
 | `/stats` | Today's (current stats day's) live view |
@@ -204,7 +210,7 @@ The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
 
 Append `?provider=vertex` or `?provider=anthropic` to any HTML view to filter to just that upstream (buttons for this are also on the page itself); omit it to see both combined.
 
-Each view shows request count, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown (annotated with provider when both are in use), a Claude Code session breakdown, an endpoint-routing breakdown (which upstream URLs actually received traffic), and hourly activity. The session section nests subagents under their recorded parents and attributes their token usage and estimated cost separately; requests without `x-claude-code-session-id` appear as **Unattributed**. The existing provider filter applies to these session and agent totals too. When available, a friendly main-session title and subagent type appear above their full stored IDs. When a rewrite failure mode has occurred (missing prompt file, unrecognized identity block, unknown request path, etc.), a dismissable banner surfaces it at the top of the page; dismissing posts to `/stats/dismiss/{mode}` and only re-appears if the failure count increases again.
+Each view shows request count, prompt-injected and passed-through counts, cache hit rate, average latency, estimated cost, token breakdown by type, per-model breakdown (annotated with provider when both are in use), a Claude Code session breakdown, an endpoint-routing breakdown (which upstream URLs actually received traffic), and hourly activity. Prompt-handling counts cover parsed model requests evaluated by the rewriter and are global across providers. The session section nests subagents under their recorded parents and attributes their token usage and estimated cost separately; requests without `x-claude-code-session-id` appear as **Unattributed**. The existing provider filter applies to these session and agent totals too. When available, a friendly main-session title and subagent type appear above their full stored IDs. When a rewrite failure mode has occurred (missing prompt file, unrecognized identity block, unknown request path, etc.), a dismissable banner surfaces it at the top of the page; dismissing posts to `/stats/dismiss/{mode}` and only re-appears if the failure count increases again.
 
 Stats are written to disk after each request as `stats-YYYYMMDD.json` in `Stats:OutputPath` and persist across service restarts. Session, agent, and parent-agent IDs are stored in full in those local files. Friendly metadata is separately stored as `session-metadata.json` in the same directory, so a later rename improves labels on historical views without changing cost data. Older stats files without header attribution are represented as Unattributed. The "day" a request counts toward is controlled by `Stats:DayBoundaryTimeZone`/`Stats:DayBoundaryTime` (see [Configuration](#configuration)). Cost estimates use each model's standard rate (with any active promotional rate applied for the date being priced) from `src/ClaudeCodeProxy/pricing.json`, refreshed via the `update-pricing` Claude Code skill in `.claude/skills/update-pricing/`.
 
@@ -318,11 +324,16 @@ claude-code-proxy/
     ├── StatsDay.cs            # computes the current stats day under the configurable day boundary
     ├── StatsNavigation.cs     # prev/next date links for the stats dashboard
     ├── StatsHtmlRenderer.cs   # stats dashboard HTML, provider filtering, failure banners
+    ├── Beta/                  # independent beta presentation models and calculations
+    ├── Pages/Beta/Stats/      # Razor Pages exposed only under /beta/stats*
+    ├── Pages/Shared/          # beta Razor layout and typed partials
     ├── PricingCatalog.cs      # rate lookup, cost calculation, date-bounded promotional rates
     ├── pricing.json           # rate catalog (standard + promotional rates, per model)
     ├── appsettings.json       # source-repo defaults (install.ps1 rewrites paths)
     ├── appsettings.Development.json
-    └── wwwroot/favicon.svg    # served directly by Program.cs, not via static-file middleware
+    └── wwwroot/
+        ├── favicon.svg        # legacy explicit endpoint remains authoritative during beta
+        └── css/stats.css      # beta stylesheet served by the static-asset manifest
 
 # Runtime artifacts (created by install.ps1):
 %LOCALAPPDATA%\ClaudeCodeProxy\

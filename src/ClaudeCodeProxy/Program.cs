@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClaudeCodeProxy;
+using ClaudeCodeProxy.Beta;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using Serilog;
@@ -42,6 +43,14 @@ builder.Services.AddSingleton<PricingCatalog>();
 builder.Services.AddSingleton<StatsTracker>();
 builder.Services.AddSingleton<SessionMetadataStore>();
 builder.Services.AddSingleton<UsageLogger>();
+builder.Services.AddRazorPages();
+builder.Services.AddSingleton<BetaStatsPageBuilder>();
+builder.Services.AddSingleton(new BetaApplicationVersion(
+    (System.Reflection.AssemblyInformationalVersionAttribute?)
+        Attribute.GetCustomAttribute(
+            typeof(Program).Assembly,
+            typeof(System.Reflection.AssemblyInformationalVersionAttribute))
+        is { } betaVersion ? betaVersion.InformationalVersion : "unknown"));
 
 var app = builder.Build();
 
@@ -109,6 +118,10 @@ app.MapGet("/stats/week", (HttpContext ctx, StatsTracker st, SessionMetadataStor
 app.MapGet("/stats/month", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
     Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days", "/stats/month", version,
         ParseProvider(ctx), metadata.GetSnapshot()), "text/html; charset=utf-8"));
+
+app.MapStaticAssets();
+app.MapRazorPages()
+   .WithStaticAssets();
 
 app.MapGet("/internal/auth-token", () => Results.Text(AuthTokenStore.Value ?? string.Empty));
 
@@ -215,13 +228,27 @@ app.Map("{**path}", async (
             if (node is not null && model is null)
                 model = node["model"]?.GetValue<string>();
 
+            // Strip empty/whitespace-only text content blocks from messages[]. Claude Code
+            // emits these on compacted/resumed assistant turns and Anthropic rejects them with
+            // 400 "messages: text content blocks must be non-empty". Runs on every parsed
+            // message-shaped request, independent of the prompt rewriter, and forces the
+            // sanitized body to be forwarded (mutated=true) when it removes anything.
+            if (node is not null && MessageSanitizer.Sanitize(node))
+            {
+                mutated = true;
+                log.LogInformation("Removed empty text content block(s) from messages[]");
+            }
+
             if (model is null)
             {
-                // Unknown path — not a model API call. Record and forward unchanged.
+                // Unknown path — not a model API call. Record and forward unchanged, unless
+                // sanitization already cleaned the body (mutated), in which case forward that.
                 log.LogWarning("Request to unknown path {Path} — forwarding unchanged", requestPath);
                 st.RecordUnknownPath(requestPath);
                 await dumper.DumpFailureAsync("UnknownPath", originalBytes, requestPath, ctx.RequestAborted);
-                forwardBytes = originalBytes;
+                forwardBytes = mutated && node is not null
+                    ? Encoding.UTF8.GetBytes(node.ToJsonString())
+                    : originalBytes;
             }
             else
             {
@@ -250,7 +277,8 @@ app.Map("{**path}", async (
                         ?? (outcome.IdentityNotRecognized ? "IdentityNotRecognized" : null);
                     if (dumpMode is not null)
                         await dumper.DumpFailureAsync(dumpMode, originalBytes, requestPath, ctx.RequestAborted);
-                    mutated = outcome.Mutated;
+                    // Preserve sanitization (mutated already true if MessageSanitizer removed blocks).
+                    mutated = mutated || outcome.Mutated;
                     if (mutated)
                     {
                         forwardBytes = Encoding.UTF8.GetBytes(node.ToJsonString());
@@ -371,3 +399,5 @@ static string? ParseProvider(HttpContext ctx)
     var p = ctx.Request.Query["provider"].FirstOrDefault()?.ToLowerInvariant();
     return p is "vertex" or "anthropic" ? p : null;
 }
+
+public partial class Program { }

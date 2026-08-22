@@ -122,6 +122,9 @@ internal static class StatsHtmlRenderer
             ? $" <span class=\"muted err\">({N0(filteredFailed)} failed)</span>"
             : "";
         sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(filteredRequests)}</span>{failedSuffix}</div>");
+        var promptCountScope = provider is not null ? " <span class=\"muted\">(all providers)</span>" : "";
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests injected</span><span class=\"v\">{N0(s.InjectedRequests)}</span>{promptCountScope}</div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests passed through</span><span class=\"v\">{N0(s.PassedThroughRequests)}</span>{promptCountScope}</div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(filteredHitPct)}\">{filteredHitPct:F0}%</span> <span class=\"muted\">on {N0(filteredTotalIn)} input tokens</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">avg latency</span><span class=\"v\">{s.AvgDurationMs:F0} ms</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">total cost</span><span class=\"v cost\">{Money(dayTotalCost)}</span></div>");
@@ -239,7 +242,7 @@ internal static class StatsHtmlRenderer
     {
         var sb = new StringBuilder(8192);
 
-        long totalRequests = 0, totalFailed = 0;
+        long totalRequests = 0, totalFailed = 0, totalInjected = 0, totalPassedThrough = 0;
         long totalUncached = 0, totalRead = 0, totalCc5m = 0, totalCc1h = 0, totalOutput = 0;
         var mergedModels = new Dictionary<string, (long req, long failed, long uncached, long read, long cc5m, long cc1h, long output)>();
         var modelNames = new Dictionary<string, string>();        // composite key -> bare model name
@@ -252,6 +255,8 @@ internal static class StatsHtmlRenderer
         var mergedCosts = new Dictionary<string, decimal>();
         foreach (var s in snapshots)
         {
+            totalInjected += s.InjectedRequests;
+            totalPassedThrough += s.PassedThroughRequests;
             var fm = FilteredModels(s, provider);
             var snapshotDate = SnapshotDate(s);
             foreach (var (key, m) in fm)
@@ -363,6 +368,9 @@ internal static class StatsHtmlRenderer
         sb.Append("<h2>Totals</h2>");
         var failedSuffix = totalFailed > 0 ? $" <span class=\"muted err\">({N0(totalFailed)} failed)</span>" : "";
         sb.Append($"<div class=\"pair\"><span class=\"k\">requests</span><span class=\"v\">{N0(totalRequests)}</span>{failedSuffix}</div>");
+        var promptCountScope = provider is not null ? " <span class=\"muted\">(all providers)</span>" : "";
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests injected</span><span class=\"v\">{N0(totalInjected)}</span>{promptCountScope}</div>");
+        sb.Append($"<div class=\"pair\"><span class=\"k\">requests passed through</span><span class=\"v\">{N0(totalPassedThrough)}</span>{promptCountScope}</div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">cache hit rate</span><span class=\"v {HitClass(hitPct)}\">{hitPct:F0}%</span> <span class=\"muted\">on {N0(totalIn)} input tokens</span></div>");
         sb.Append($"<div class=\"pair\"><span class=\"k\">total cost</span><span class=\"v cost\">{Money(totalCost)}</span></div>");
         sb.Append("<table style=\"margin-top:.75rem\"><tr><th>type</th><th class=\"num\">tokens</th></tr>");
@@ -832,7 +840,7 @@ internal static class StatsHtmlRenderer
                     PromptFailureMode.PromptFileReadError   => $"{n} {req} passed through unmodified &mdash; prompt file became unreadable during the request (I/O error). Check file permissions and disk health.",
                     PromptFailureMode.NoBulkBlock           => $"{n} {req} passed through unmodified &mdash; no bulk system block found. Claude Code&rsquo;s request shape may have changed.",
                     PromptFailureMode.NoBoundaryMarker      => $"{n} {req} passed through unmodified &mdash; bulk block found but no dynamic boundary marker present. Claude Code&rsquo;s prompt structure may have changed.",
-                    PromptFailureMode.IdentityNotRecognized => $"{n} {req} contained no recognized Claude Code identity block. The CLI&rsquo;s identity strings may have changed &mdash; update <code>KnownIdentityPrefixes</code> in <code>PromptRewriter.cs</code>.",
+                    PromptFailureMode.IdentityNotRecognized => $"{n} {req} passed through unchanged because no recognized Claude Code identity block was present. If this was normal Claude Code traffic, update <code>KnownIdentityPrefixes</code> in <code>PromptRewriter.cs</code>.",
                     PromptFailureMode.UnhandledException    => $"{n} {req} passed through unmodified due to an unexpected exception during prompt rewrite. Check the service logs.",
                     _                                       => $"{n} {req} encountered rewrite failure: {Esc(mode.ToString())}.",
                 };

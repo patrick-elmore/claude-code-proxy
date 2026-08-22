@@ -17,6 +17,8 @@ public sealed class StatsTracker
     private DateTimeOffset _startedAt;
     private long _requestCount;
     private long _failedCount;
+    private long _injectedRequests;
+    private long _passedThroughRequests;
     private long _totalInputUncached;
     private long _totalCacheRead;
     private long _totalCacheCreation5m;
@@ -273,7 +275,9 @@ public sealed class StatsTracker
                 ByEndpoint: (file.ByEndpoint ?? []).ToDictionary(
                     kvp => kvp.Key,
                     kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider)),
-                Sessions: BuildSessionSnapshots(file.BySession ?? BuildLegacyUnattributedSession(file))
+                Sessions: BuildSessionSnapshots(file.BySession ?? BuildLegacyUnattributedSession(file)),
+                InjectedRequests: file.InjectedRequests,
+                PassedThroughRequests: file.PassedThroughRequests
             );
         }
         catch (Exception ex)
@@ -389,21 +393,23 @@ public sealed class StatsTracker
                 ByEndpoint: _byEndpoint.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new EndpointSnapshot(kvp.Value.Requests, kvp.Value.Failed, kvp.Value.Provider)),
-                Sessions: BuildSessionSnapshots(_bySession)
+                Sessions: BuildSessionSnapshots(_bySession),
+                InjectedRequests: _injectedRequests,
+                PassedThroughRequests: _passedThroughRequests
             );
         }
     }
 
     public void RecordRewriteOutcome(RewriteOutcome outcome)
     {
-        // NotApplicable outcomes (no FailureMode, not mutated, no identity flag) are not tracked.
-        if (!outcome.Mutated && outcome.FailureMode is null && !outcome.IdentityNotRecognized) return;
-
         lock (_lock)
         {
             MaybeRollover();
+            if (outcome.Mutated) _injectedRequests++;
+            else _passedThroughRequests++;
             if (outcome.FailureMode is { } mode) _rewriteFailures[mode]++;
-            if (outcome.IdentityNotRecognized) _rewriteFailures[PromptFailureMode.IdentityNotRecognized]++;
+            if (outcome.IdentityNotRecognized && outcome.FailureMode != PromptFailureMode.IdentityNotRecognized)
+                _rewriteFailures[PromptFailureMode.IdentityNotRecognized]++;
             PersistToDisk();
         }
     }
@@ -607,6 +613,8 @@ public sealed class StatsTracker
         _startedAt = DateTimeOffset.Now;
         _requestCount = 0;
         _failedCount = 0;
+        _injectedRequests = 0;
+        _passedThroughRequests = 0;
         _totalInputUncached = 0;
         _totalCacheRead = 0;
         _totalCacheCreation5m = 0;
@@ -658,6 +666,8 @@ public sealed class StatsTracker
 
             _requestCount = snapshot.RequestCount;
             _failedCount = snapshot.FailedCount;
+            _injectedRequests = snapshot.InjectedRequests;
+            _passedThroughRequests = snapshot.PassedThroughRequests;
             _totalInputUncached = snapshot.Totals.InputUncached;
             _totalCacheRead = snapshot.Totals.CacheRead;
             _totalCacheCreation5m = snapshot.Totals.CacheCreation5m;
@@ -745,6 +755,8 @@ public sealed class StatsTracker
         StartedAt: _startedAt,
         RequestCount: _requestCount,
         FailedCount: _failedCount,
+        InjectedRequests: _injectedRequests,
+        PassedThroughRequests: _passedThroughRequests,
         Totals: new TokenTotals(_totalInputUncached, _totalCacheRead, _totalCacheCreation5m, _totalCacheCreation1h, _totalOutput),
         TotalDurationMs: _totalDurationMs,
         RewriteFailures: _rewriteFailures.ToDictionary(kvp => kvp.Key.ToString(), kvp => kvp.Value),
@@ -791,7 +803,9 @@ public sealed class StatsTracker
         Dictionary<string, ModelBucket> ByModel,
         List<HourlyFileEntry> Hourly,
         Dictionary<string, EndpointBucket>? ByEndpoint,
-        Dictionary<string, SessionBucket>? BySession = null
+        Dictionary<string, SessionBucket>? BySession = null,
+        long InjectedRequests = 0,
+        long PassedThroughRequests = 0
     );
 
     private sealed record HourlyFileEntry(
@@ -914,6 +928,8 @@ public sealed record StatsSnapshot(
     IReadOnlyList<HourlyStats> Hourly,
     IReadOnlyDictionary<string, ProviderTotals> ByProvider,
     IReadOnlyDictionary<string, EndpointSnapshot> ByEndpoint,
+    long InjectedRequests = 0,
+    long PassedThroughRequests = 0,
     IReadOnlyList<SessionSnapshot>? Sessions = null
 );
 

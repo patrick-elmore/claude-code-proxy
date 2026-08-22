@@ -1,0 +1,25 @@
+@model BetaStatsPageViewModel
+
+@if (Model.Days.Count > 0)
+{
+    <section data-stats-section="days">
+        <h2>By day</h2>
+        <div class="table-wrap"><table>
+            <thead><tr><th scope="col">date</th><th scope="col" class="num">requests</th><th scope="col" class="num">failed</th><th scope="col" class="num">hit %</th><th scope="col" class="num">avg ms</th><th scope="col" class="num">tokens in</th><th scope="col" class="num">output</th><th scope="col" class="num">cost</th></tr></thead>
+            <tbody>
+            @foreach (var row in Model.Days)
+            {
+                <tr>
+                    <td class="date mono">
+                        @if (row.IsToday){<a asp-page="/Beta/Stats/Index" asp-route-provider="@Model.Provider">@row.Date</a><span class="muted"> (live)</span>}
+                        else{<a asp-page="/Beta/Stats/Day" asp-route-date="@row.Date" asp-route-provider="@Model.Provider">@row.Date</a>}
+                    </td>
+                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
+                    <td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td><td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs)</td>
+                    <td class="num">@BetaStatsDisplay.Number(row.InputTokens)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                </tr>
+            }
+            </tbody>
+        </table></div>
+    </section>
+}

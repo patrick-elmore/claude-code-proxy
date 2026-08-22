@@ -3,6 +3,7 @@
     <Project Path="src/ClaudeCodeProxy/ClaudeCodeProxy.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/ClaudeCodeProxy.IntegrationTests/ClaudeCodeProxy.IntegrationTests.csproj" />
     <Project Path="tests/ClaudeCodeProxy.Tests/ClaudeCodeProxy.Tests.csproj" />
   </Folder>
 </Solution>

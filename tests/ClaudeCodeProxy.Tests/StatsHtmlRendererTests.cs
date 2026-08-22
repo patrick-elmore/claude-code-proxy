@@ -21,6 +21,25 @@ public sealed class StatsHtmlRendererTests
         html.ShouldContain("$3,100.00 monthly target / 31 days");
     }
 
+    [Fact]
+    public void Render_ShowsInjectedAndPassedThroughRequestCounts()
+    {
+        var pricing = new PricingCatalog(NullLogger<PricingCatalog>.Instance);
+        var snapshot = Snapshot("2026-08-03", 1) with
+        {
+            InjectedRequests = 12,
+            PassedThroughRequests = 3,
+        };
+
+        var dailyHtml = StatsHtmlRenderer.Render(snapshot, pricing, "test");
+        dailyHtml.ShouldContain("requests injected</span><span class=\"v\">12</span>");
+        dailyHtml.ShouldContain("requests passed through</span><span class=\"v\">3</span>");
+
+        var rangeHtml = StatsHtmlRenderer.RenderRange([snapshot, snapshot], pricing, "test", "/stats/week", "test");
+        rangeHtml.ShouldContain("requests injected</span><span class=\"v\">24</span>");
+        rangeHtml.ShouldContain("requests passed through</span><span class=\"v\">6</span>");
+    }
+
     private static StatsSnapshot Snapshot(string date, double uptimeSeconds) => new(
         Date: date,
         StartedAt: DateTimeOffset.UtcNow,

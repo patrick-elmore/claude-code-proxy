@@ -1,0 +1,7 @@
+@model BetaMonthSpendViewModel
+
+<section data-stats-section="month-spend">
+    <h2>@Model.Title</h2>
+    <div class="pair"><span class="k">daily average cost</span><span class="v cost">@BetaStatsDisplay.Money(Model.DailyAverage)</span> <span class="muted">month-to-date across @Model.ElapsedDays day@(Model.ElapsedDays == 1 ? "" : "s")</span></div>
+    <div class="pair"><span class="k">target daily spend</span><span class="v cost">@BetaStatsDisplay.Money(Model.DailyTarget)</span> <span class="muted">@BetaStatsDisplay.Money(Model.MonthlyTarget) monthly target / @Model.DaysInMonth days</span></div>
+</section>

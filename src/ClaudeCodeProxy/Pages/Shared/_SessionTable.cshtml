@@ -1,0 +1,43 @@
+@model IReadOnlyList<BetaSessionRowViewModel>
+
+@if (Model.Count > 0)
+{
+    <section data-stats-section="sessions">
+        <h2>Claude Code sessions</h2>
+        <div class="table-wrap"><table>
+            <thead><tr><th scope="col">session / agent</th><th scope="col" class="num">requests</th><th scope="col" class="num">failed</th><th scope="col" class="num">tokens in</th><th scope="col" class="num">output</th><th scope="col" class="num">cost</th></tr></thead>
+            <tbody>
+            @foreach (var row in Model)
+            {
+                <tr class="@(row.Kind == BetaSessionRowKind.Session ? "session-total" : "")" data-row-kind="@row.Kind" data-depth="@row.Depth">
+                    <td>
+                        <div class="agent-label" style="padding-left:@((row.Depth * 1.25m).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))rem">
+                            @if (row.Kind == BetaSessionRowKind.Session)
+                            {
+                                <strong>@row.Label</strong>
+                                @if (row.IsUnattributed){<div class="muted">no Claude Code session ID</div>}
+                                else{<div class="muted">session <span class="mono session-id">@row.Id</span></div>}
+                            }
+                            else if (row.Kind == BetaSessionRowKind.MainAgent)
+                            {
+                                <strong>Main agent</strong>
+                            }
+                            else if (row.Label == "Agent")
+                            {
+                                <text>Agent <span class="mono">@row.Id</span></text>
+                            }
+                            else
+                            {
+                                <strong>@row.Label</strong><div class="muted">agent <span class="mono">@row.Id</span></div>
+                            }
+                            @if (row.ParentMissing && row.ParentAgentId is not null){<span class="muted"> parent: @row.ParentAgentId (not observed)</span>}
+                        </div>
+                    </td>
+                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
+                    <td class="num">@BetaStatsDisplay.Number(row.InputTokens)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                </tr>
+            }
+            </tbody>
+        </table></div>
+    </section>
+}

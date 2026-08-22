@@ -81,6 +81,23 @@ public sealed class StatsTrackerTests : IDisposable
     }
 
     [Fact]
+    public void RewriteDispositionCounts_AllOutcomesAndPersistsAcrossRestart()
+    {
+        var tracker = Build();
+        tracker.RecordRewriteOutcome(RewriteOutcome.Success());
+        tracker.RecordRewriteOutcome(RewriteOutcome.NotApplicable);
+        tracker.RecordRewriteOutcome(RewriteOutcome.Failure(PromptFailureMode.IdentityNotRecognized));
+
+        var snapshot = tracker.GetSnapshot();
+        snapshot.InjectedRequests.ShouldBe(1);
+        snapshot.PassedThroughRequests.ShouldBe(2);
+
+        var restored = Build().GetSnapshot();
+        restored.InjectedRequests.ShouldBe(1);
+        restored.PassedThroughRequests.ShouldBe(2);
+    }
+
+    [Fact]
     public void SessionAndAgentAttribution_PersistedAndRestored()
     {
         var tracker = Build();
@@ -140,6 +157,8 @@ public sealed class StatsTrackerTests : IDisposable
             """);
 
         var snapshot = Build().GetSnapshot();
+        snapshot.InjectedRequests.ShouldBe(0);
+        snapshot.PassedThroughRequests.ShouldBe(0);
         snapshot.Sessions.ShouldNotBeNull();
         var unattributed = snapshot.Sessions!.Single();
         unattributed.SessionId.ShouldBeNull();

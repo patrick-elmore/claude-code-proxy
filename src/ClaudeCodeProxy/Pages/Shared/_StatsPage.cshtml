@@ -1,0 +1,28 @@
+@model BetaStatsPageViewModel
+@inject BetaApplicationVersion AppVersion
+
+<header class="page-header">
+    <div class="page-header-text"><h1>Claude Code Proxy <span class="beta-badge">beta</span></h1><p class="muted">@Model.HeaderSubtitle</p></div>
+    <div class="page-header-icon"><partial name="_HeaderIcon" /></div>
+</header>
+<partial name="_FailureBanners" model="Model.Failures" />
+<partial name="_StatsNavigation" model="Model" />
+<partial name="_Summary" model="Model" />
+<partial name="_TokenTotals" model="Model.Tokens" />
+<partial name="_DayTable" model="Model" />
+<partial name="_ModelTable" model="Model" />
+@if (Model.MonthSpend is not null){<partial name="_MonthSpend" model="Model.MonthSpend" />}
+<partial name="_SessionTable" model="Model.Sessions" />
+<partial name="_EndpointTable" model="Model" />
+<partial name="_HourlyTable" model="Model.Hours" />
+<footer>
+    @if (Model.IsRange)
+    {
+        <a asp-page="/Beta/Stats/Index">Today</a><text> &middot; </text><a asp-page="/Beta/Stats/Week">Week</a><text> &middot; </text><a asp-page="/Beta/Stats/Month">Month</a>
+    }
+    else
+    {
+        <a href="/stats.json">raw JSON</a>
+    }
+    <span class="version">v@AppVersion.Value</span>
+</footer>
