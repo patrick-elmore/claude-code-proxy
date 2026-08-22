@@ -18,6 +18,10 @@ publish/
 logs/
 dumps/
 stats/
+!src/ClaudeCodeProxy/Pages/Stats/
+!src/ClaudeCodeProxy/Pages/Stats/**
+!src/ClaudeCodeProxy/Presentation/Stats/
+!src/ClaudeCodeProxy/Presentation/Stats/**
 
 # Secrets safety net — never commit credentials, keys, or tokens.
 .auth/

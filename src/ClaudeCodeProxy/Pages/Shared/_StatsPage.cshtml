@@ -1,8 +1,8 @@
-@model BetaStatsPageViewModel
-@inject BetaApplicationVersion AppVersion
+@model StatsPageViewModel
+@inject ApplicationVersion AppVersion
 
 <header class="page-header">
-    <div class="page-header-text"><h1>Claude Code Proxy <span class="beta-badge">beta</span></h1><p class="muted">@Model.HeaderSubtitle</p></div>
+    <div class="page-header-text"><h1>Claude Code Proxy</h1><p class="muted">@Model.HeaderSubtitle</p></div>
     <div class="page-header-icon"><partial name="_HeaderIcon" /></div>
 </header>
 <partial name="_FailureBanners" model="Model.Failures" />
@@ -18,7 +18,7 @@
 <footer>
     @if (Model.IsRange)
     {
-        <a asp-page="/Beta/Stats/Index">Today</a><text> &middot; </text><a asp-page="/Beta/Stats/Week">Week</a><text> &middot; </text><a asp-page="/Beta/Stats/Month">Month</a>
+        <a asp-page="/Stats/Index">Today</a><text> &middot; </text><a asp-page="/Stats/Week">Week</a><text> &middot; </text><a asp-page="/Stats/Month">Month</a>
     }
     else
     {

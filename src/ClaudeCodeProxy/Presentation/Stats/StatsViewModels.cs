@@ -1,6 +1,6 @@
-namespace ClaudeCodeProxy.Beta;
+namespace ClaudeCodeProxy.Presentation.Stats;
 
-public sealed record BetaStatsPageViewModel(
+public sealed record StatsPageViewModel(
     string DocumentTitle,
     string HeaderSubtitle,
     string SummaryTitle,
@@ -11,17 +11,17 @@ public sealed record BetaStatsPageViewModel(
     DateOnly? NextDate,
     bool IsHistorical,
     bool IsRange,
-    BetaSummaryViewModel Summary,
-    BetaTokenTotalsViewModel Tokens,
-    IReadOnlyList<BetaFailureBannerViewModel> Failures,
-    IReadOnlyList<BetaModelRowViewModel> Models,
-    IReadOnlyList<BetaDayRowViewModel> Days,
-    IReadOnlyList<BetaSessionRowViewModel> Sessions,
-    IReadOnlyList<BetaEndpointRowViewModel> Endpoints,
-    IReadOnlyList<BetaHourlyRowViewModel> Hours,
-    BetaMonthSpendViewModel? MonthSpend);
+    SummaryViewModel Summary,
+    TokenTotalsViewModel Tokens,
+    IReadOnlyList<FailureBannerViewModel> Failures,
+    IReadOnlyList<ModelRowViewModel> Models,
+    IReadOnlyList<DayRowViewModel> Days,
+    IReadOnlyList<SessionRowViewModel> Sessions,
+    IReadOnlyList<EndpointRowViewModel> Endpoints,
+    IReadOnlyList<HourlyRowViewModel> Hours,
+    MonthSpendViewModel? MonthSpend);
 
-public sealed record BetaSummaryViewModel(
+public sealed record SummaryViewModel(
     long Requests,
     long Failed,
     long InjectedRequests,
@@ -32,18 +32,18 @@ public sealed record BetaSummaryViewModel(
     decimal TotalCost,
     bool PromptCountsAreGlobal);
 
-public sealed record BetaTokenTotalsViewModel(
+public sealed record TokenTotalsViewModel(
     long CacheRead,
     long CacheCreation,
     long InputUncached,
     long Output);
 
-public sealed record BetaFailureBannerViewModel(
+public sealed record FailureBannerViewModel(
     PromptFailureMode Mode,
     long Count,
     IReadOnlyList<string> UnknownPaths);
 
-public sealed record BetaModelRowViewModel(
+public sealed record ModelRowViewModel(
     string Model,
     string? Provider,
     long Requests,
@@ -56,7 +56,7 @@ public sealed record BetaModelRowViewModel(
     long Output,
     decimal Cost);
 
-public sealed record BetaDayRowViewModel(
+public sealed record DayRowViewModel(
     string Date,
     bool IsToday,
     long Requests,
@@ -67,15 +67,15 @@ public sealed record BetaDayRowViewModel(
     long Output,
     decimal Cost);
 
-public enum BetaSessionRowKind
+public enum SessionRowKind
 {
     Session,
     MainAgent,
     Agent,
 }
 
-public sealed record BetaSessionRowViewModel(
-    BetaSessionRowKind Kind,
+public sealed record SessionRowViewModel(
+    SessionRowKind Kind,
     int Depth,
     string Label,
     string? Id,
@@ -88,13 +88,13 @@ public sealed record BetaSessionRowViewModel(
     long Output,
     decimal Cost);
 
-public sealed record BetaEndpointRowViewModel(
+public sealed record EndpointRowViewModel(
     string Endpoint,
     string? Provider,
     long Requests,
     long Failed);
 
-public sealed record BetaHourlyRowViewModel(
+public sealed record HourlyRowViewModel(
     string Hour,
     long Requests,
     long Failed,
@@ -106,7 +106,7 @@ public sealed record BetaHourlyRowViewModel(
     long Output,
     decimal Cost);
 
-public sealed record BetaMonthSpendViewModel(
+public sealed record MonthSpendViewModel(
     string Title,
     decimal DailyAverage,
     decimal DailyTarget,
@@ -114,4 +114,4 @@ public sealed record BetaMonthSpendViewModel(
     int ElapsedDays,
     int DaysInMonth);
 
-public sealed record BetaApplicationVersion(string Value);
+public sealed record ApplicationVersion(string Value);

@@ -192,12 +192,7 @@ Two diagnostic-only tools help debug enterprise auth handshakes when standing up
 
 ## Stats dashboard
 
-The proxy exposes a usage dashboard at `http://localhost:9996/stats`.
-
-A separate Razor Pages rewrite is available for evaluation at
-`http://localhost:9996/beta/stats`. Its day, week, month, provider-filter, and
-dismiss routes all remain beneath `/beta/stats*`; the existing `/stats*`
-dashboard remains the default and is not backed by the beta renderer.
+The proxy exposes a Razor Pages usage dashboard at `http://localhost:9996/stats`.
 
 | Endpoint | Description |
 |---|---|
@@ -323,17 +318,16 @@ claude-code-proxy/
     ├── StatsTracker.cs        # per-day stats accumulation and persistence, by model/provider/endpoint
     ├── StatsDay.cs            # computes the current stats day under the configurable day boundary
     ├── StatsNavigation.cs     # prev/next date links for the stats dashboard
-    ├── StatsHtmlRenderer.cs   # stats dashboard HTML, provider filtering, failure banners
-    ├── Beta/                  # independent beta presentation models and calculations
-    ├── Pages/Beta/Stats/      # Razor Pages exposed only under /beta/stats*
-    ├── Pages/Shared/          # beta Razor layout and typed partials
+    ├── Presentation/Stats/    # typed stats presentation models and calculations
+    ├── Pages/Stats/           # Razor Pages exposed under /stats*
+    ├── Pages/Shared/          # stats Razor layout and typed partials
     ├── PricingCatalog.cs      # rate lookup, cost calculation, date-bounded promotional rates
     ├── pricing.json           # rate catalog (standard + promotional rates, per model)
     ├── appsettings.json       # source-repo defaults (install.ps1 rewrites paths)
     ├── appsettings.Development.json
     └── wwwroot/
-        ├── favicon.svg        # legacy explicit endpoint remains authoritative during beta
-        └── css/stats.css      # beta stylesheet served by the static-asset manifest
+        ├── favicon.svg        # favicon served by the static-asset manifest
+        └── css/stats.css      # stats stylesheet served by the static-asset manifest
 
 # Runtime artifacts (created by install.ps1):
 %LOCALAPPDATA%\ClaudeCodeProxy\

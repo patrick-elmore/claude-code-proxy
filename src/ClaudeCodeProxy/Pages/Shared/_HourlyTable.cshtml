@@ -1,4 +1,4 @@
-@model IReadOnlyList<BetaHourlyRowViewModel>
+@model IReadOnlyList<HourlyRowViewModel>
 
 @if (Model.Count > 0)
 {
@@ -9,7 +9,7 @@
             <tbody>
             @foreach (var row in Model)
             {
-                <tr><td>@row.Hour</td><td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td><td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td><td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs)</td><td class="num">@BetaStatsDisplay.Number(row.CacheRead)</td><td class="num">@BetaStatsDisplay.Number(row.CacheCreation)</td><td class="num">@BetaStatsDisplay.Number(row.InputUncached)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td></tr>
+                <tr><td>@row.Hour</td><td class="num">@StatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@StatsDisplay.Number(row.Failed)</td><td class="num @StatsDisplay.HitClass(row.HitRatePct)">@StatsDisplay.Percent(row.HitRatePct)</td><td class="num">@StatsDisplay.Milliseconds(row.AvgDurationMs)</td><td class="num">@StatsDisplay.Number(row.CacheRead)</td><td class="num">@StatsDisplay.Number(row.CacheCreation)</td><td class="num">@StatsDisplay.Number(row.InputUncached)</td><td class="num">@StatsDisplay.Number(row.Output)</td><td class="num cost">@StatsDisplay.Money(row.Cost)</td></tr>
             }
             </tbody>
         </table></div>

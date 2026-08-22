@@ -1,4 +1,4 @@
-@model BetaStatsPageViewModel
+@model StatsPageViewModel
 
 @if (Model.Endpoints.Count > 0)
 {
@@ -9,7 +9,7 @@
             <tbody>
             @foreach (var row in Model.Endpoints)
             {
-                <tr>@if (Model.Provider is null){<td>@(row.Provider ?? "—")</td>}<td class="mono">@row.Endpoint</td><td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td></tr>
+                <tr>@if (Model.Provider is null){<td>@(row.Provider ?? "—")</td>}<td class="mono">@row.Endpoint</td><td class="num">@StatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@StatsDisplay.Number(row.Failed)</td></tr>
             }
             </tbody>
         </table></div>

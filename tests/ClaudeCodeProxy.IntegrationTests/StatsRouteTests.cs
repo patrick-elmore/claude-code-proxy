@@ -8,47 +8,38 @@ using Shouldly;
 
 namespace ClaudeCodeProxy.IntegrationTests;
 
-public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFactory>
+public sealed class StatsRouteTests : IClassFixture<ProxyWebApplicationFactory>
 {
     private readonly ProxyWebApplicationFactory _factory;
 
-    public BetaStatsRouteTests(ProxyWebApplicationFactory factory) => _factory = factory;
+    public StatsRouteTests(ProxyWebApplicationFactory factory) => _factory = factory;
 
     [Theory]
-    [InlineData("/beta/stats")]
-    [InlineData("/beta/stats/week")]
-    [InlineData("/beta/stats/month")]
-    public async Task BetaPages_ReturnRazorHtmlWithoutChangingLegacyRoutes(string route)
+    [InlineData("/stats")]
+    [InlineData("/stats/week")]
+    [InlineData("/stats/month")]
+    public async Task StatsPages_ReturnRazorHtml(string route)
     {
         var client = _factory.CreateClient();
 
-        var beta = await client.GetAsync(route);
-        var legacy = await client.GetAsync(route == "/beta/stats" ? "/stats" : route.Replace("/beta", ""));
+        var response = await client.GetAsync(route);
 
-        beta.StatusCode.ShouldBe(HttpStatusCode.OK);
-        beta.Content.Headers.ContentType!.ToString().ShouldBe("text/html; charset=utf-8");
-        var betaHtml = await beta.Content.ReadAsStringAsync();
-        betaHtml.ShouldContain("class=\"beta-badge\"");
-        var betaDocument = await new HtmlParser().ParseDocumentAsync(betaHtml);
-        var stylesheet = betaDocument.QuerySelector("link[rel=stylesheet]")!.GetAttribute("href");
+        response.StatusCode.ShouldBe(HttpStatusCode.OK);
+        response.Content.Headers.ContentType!.ToString().ShouldBe("text/html; charset=utf-8");
+        var document = await new HtmlParser().ParseDocumentAsync(await response.Content.ReadAsStringAsync());
+        var stylesheet = document.QuerySelector("link[rel=stylesheet]")!.GetAttribute("href");
         stylesheet.ShouldNotBeNull();
         stylesheet!.ShouldStartWith("/css/stats");
         stylesheet.ShouldEndWith(".css");
-
-        legacy.StatusCode.ShouldBe(HttpStatusCode.OK);
-        var legacyHtml = await legacy.Content.ReadAsStringAsync();
-        legacyHtml.ShouldNotContain("class=\"beta-badge\"");
-        legacyHtml.ShouldContain("<style>");
     }
 
     [Fact]
-    public async Task BetaRouteStatusAndStaticAssetContracts_AreExplicit()
+    public async Task StatsRouteStatusAndStaticAssetContracts_AreExplicit()
     {
         var client = _factory.CreateClient();
 
-        (await client.GetAsync("/beta/stats/not-a-date")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
-        (await client.GetAsync("/beta/stats/2000-01-01")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
-        (await client.GetAsync("/beta/stats/week.json")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await client.GetAsync("/stats/not-a-date")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
+        (await client.GetAsync("/stats/2000-01-01")).StatusCode.ShouldBe(HttpStatusCode.NotFound);
         (await client.GetAsync("/stats/week.json")).StatusCode.ShouldBe(HttpStatusCode.BadRequest);
 
         var css = await client.GetAsync("/css/stats.css");
@@ -61,7 +52,7 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
     }
 
     [Fact]
-    public void RazorPageEndpoints_AreExposedOnlyUnderBetaStats()
+    public void RazorPageEndpoints_AreExposedOnlyUnderStats()
     {
         var pageRoutes = _factory.Services.GetServices<EndpointDataSource>()
             .SelectMany(source => source.Endpoints)
@@ -70,17 +61,17 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
             .ToList();
 
         pageRoutes.Count.ShouldBe(5);
-        pageRoutes.ShouldAllBe(route => route!.TrimStart('/').StartsWith("beta/stats", StringComparison.Ordinal));
+        pageRoutes.ShouldAllBe(route => route!.TrimStart('/').StartsWith("stats", StringComparison.Ordinal));
     }
 
     [Fact]
-    public async Task BetaNavigationAndForms_StayUnderBetaPrefix()
+    public async Task StatsNavigationAndForms_StayUnderStatsPrefix()
     {
         var tracker = _factory.Services.GetRequiredService<StatsTracker>();
         tracker.RecordRewriteOutcome(RewriteOutcome.Failure(PromptFailureMode.IdentityNotRecognized));
         var client = _factory.CreateClient();
 
-        var html = await client.GetStringAsync("/beta/stats?provider=vertex");
+        var html = await client.GetStringAsync("/stats?provider=vertex");
         var document = await new HtmlParser().ParseDocumentAsync(html);
 
         var pageLinks = document.QuerySelectorAll("nav a, footer a")
@@ -88,22 +79,22 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
             .Where(href => href is not null && !href.StartsWith("/stats.json", StringComparison.Ordinal))
             .ToList();
         pageLinks.ShouldNotBeEmpty();
-        pageLinks.ShouldAllBe(href => href!.StartsWith("/beta/stats", StringComparison.Ordinal));
+        pageLinks.ShouldAllBe(href => href!.StartsWith("/stats", StringComparison.Ordinal));
 
         var form = document.QuerySelector("form");
         form.ShouldNotBeNull();
-        form!.GetAttribute("action").ShouldStartWith("/beta/stats/dismiss/");
+        form!.GetAttribute("action").ShouldStartWith("/stats/dismiss/");
         form.QuerySelector("input[name=__RequestVerificationToken]").ShouldNotBeNull();
     }
 
     [Fact]
-    public async Task BetaDismiss_RequiresAntiforgeryAndRedirectsInsideBeta()
+    public async Task StatsDismiss_RequiresAntiforgeryAndRedirectsToStats()
     {
         var tracker = _factory.Services.GetRequiredService<StatsTracker>();
         tracker.RecordRewriteOutcome(RewriteOutcome.Failure(PromptFailureMode.NoBulkBlock));
         var client = _factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
 
-        var html = await client.GetStringAsync("/beta/stats");
+        var html = await client.GetStringAsync("/stats");
         var document = await new HtmlParser().ParseDocumentAsync(html);
         var form = document.QuerySelector("form[action*='NoBulkBlock']");
         form.ShouldNotBeNull();
@@ -116,11 +107,11 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
             }));
 
         response.StatusCode.ShouldBe(HttpStatusCode.Redirect);
-        response.Headers.Location!.ToString().ShouldBe("/beta/stats");
+        response.Headers.Location!.ToString().ShouldBe("/stats");
     }
 
     [Fact]
-    public async Task BetaRazor_EncodesHostileStatsAndUsesValidUnknownPathMarkup()
+    public async Task StatsRazor_EncodesHostileStatsAndUsesValidUnknownPathMarkup()
     {
         var tracker = _factory.Services.GetRequiredService<StatsTracker>();
         var metadata = _factory.Services.GetRequiredService<SessionMetadataStore>();
@@ -138,7 +129,7 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
         tracker.RecordUnknownPath("/<svg onload=alert('path')>");
         var client = _factory.CreateClient();
 
-        var html = await client.GetStringAsync("/beta/stats");
+        var html = await client.GetStringAsync("/stats");
         var document = await new HtmlParser().ParseDocumentAsync(html);
 
         document.QuerySelector("script").ShouldBeNull();
@@ -152,7 +143,7 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
     }
 
     [Fact]
-    public async Task DailyBetaAndLegacy_HaveEquivalentSectionsSummariesAndTables()
+    public async Task DailyStats_RendersExpectedSectionsSummariesAndTables()
     {
         var tracker = _factory.Services.GetRequiredService<StatsTracker>();
         tracker.Record(new RequestStats("parity-request", DateTimeOffset.Now)
@@ -170,14 +161,13 @@ public sealed class BetaStatsRouteTests : IClassFixture<ProxyWebApplicationFacto
         });
         tracker.RecordRewriteOutcome(RewriteOutcome.Success());
         var client = _factory.CreateClient();
-        var parser = new HtmlParser();
+        var document = await new HtmlParser().ParseDocumentAsync(await client.GetStringAsync("/stats"));
 
-        var legacy = await parser.ParseDocumentAsync(await client.GetStringAsync("/stats"));
-        var beta = await parser.ParseDocumentAsync(await client.GetStringAsync("/beta/stats"));
-
-        Headings(beta).ShouldBe(Headings(legacy));
-        SummaryPairs(beta).ShouldBe(SummaryPairs(legacy));
-        TableMatrices(beta).ShouldBe(TableMatrices(legacy));
+        Headings(document).ShouldContain("Today");
+        Headings(document).ShouldContain("By model");
+        SummaryPairs(document).ContainsKey("requests").ShouldBeTrue();
+        TableMatrices(document).ShouldContain(table =>
+            table.Any(row => row.Contains("claude-sonnet-4-5", StringComparison.Ordinal)));
     }
 
     private static string[] Headings(AngleSharp.Dom.IDocument document) =>

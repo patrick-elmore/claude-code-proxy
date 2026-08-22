@@ -1,4 +1,4 @@
-@model BetaStatsPageViewModel
+@model StatsPageViewModel
 
 @if (Model.Days.Count > 0)
 {
@@ -11,12 +11,12 @@
             {
                 <tr>
                     <td class="date mono">
-                        @if (row.IsToday){<a asp-page="/Beta/Stats/Index" asp-route-provider="@Model.Provider">@row.Date</a><span class="muted"> (live)</span>}
-                        else{<a asp-page="/Beta/Stats/Day" asp-route-date="@row.Date" asp-route-provider="@Model.Provider">@row.Date</a>}
+                        @if (row.IsToday){<a asp-page="/Stats/Index" asp-route-provider="@Model.Provider">@row.Date</a><span class="muted"> (live)</span>}
+                        else{<a asp-page="/Stats/Day" asp-route-date="@row.Date" asp-route-provider="@Model.Provider">@row.Date</a>}
                     </td>
-                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
-                    <td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td><td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs)</td>
-                    <td class="num">@BetaStatsDisplay.Number(row.InputTokens)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                    <td class="num">@StatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@StatsDisplay.Number(row.Failed)</td>
+                    <td class="num @StatsDisplay.HitClass(row.HitRatePct)">@StatsDisplay.Percent(row.HitRatePct)</td><td class="num">@StatsDisplay.Milliseconds(row.AvgDurationMs)</td>
+                    <td class="num">@StatsDisplay.Number(row.InputTokens)</td><td class="num">@StatsDisplay.Number(row.Output)</td><td class="num cost">@StatsDisplay.Money(row.Cost)</td>
                 </tr>
             }
             </tbody>

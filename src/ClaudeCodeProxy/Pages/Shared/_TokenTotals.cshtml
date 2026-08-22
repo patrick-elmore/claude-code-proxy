@@ -1,14 +1,14 @@
-@model BetaTokenTotalsViewModel
+@model TokenTotalsViewModel
 
 <section data-stats-section="tokens">
     <h2>Token totals</h2>
     <div class="table-wrap"><table>
         <thead><tr><th scope="col">type</th><th scope="col" class="num">tokens</th></tr></thead>
         <tbody>
-            <tr><td class="hit">cache read</td><td class="num">@BetaStatsDisplay.Number(Model.CacheRead)</td></tr>
-            <tr><td class="warn">cache creation</td><td class="num">@BetaStatsDisplay.Number(Model.CacheCreation)</td></tr>
-            <tr><td>uncached input</td><td class="num">@BetaStatsDisplay.Number(Model.InputUncached)</td></tr>
-            <tr><td>output</td><td class="num">@BetaStatsDisplay.Number(Model.Output)</td></tr>
+            <tr><td class="hit">cache read</td><td class="num">@StatsDisplay.Number(Model.CacheRead)</td></tr>
+            <tr><td class="warn">cache creation</td><td class="num">@StatsDisplay.Number(Model.CacheCreation)</td></tr>
+            <tr><td>uncached input</td><td class="num">@StatsDisplay.Number(Model.InputUncached)</td></tr>
+            <tr><td>output</td><td class="num">@StatsDisplay.Number(Model.Output)</td></tr>
         </tbody>
     </table></div>
 </section>

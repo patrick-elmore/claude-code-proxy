@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClaudeCodeProxy;
-using ClaudeCodeProxy.Beta;
+using ClaudeCodeProxy.Presentation.Stats;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Options;
 using Serilog;
@@ -44,64 +44,23 @@ builder.Services.AddSingleton<StatsTracker>();
 builder.Services.AddSingleton<SessionMetadataStore>();
 builder.Services.AddSingleton<UsageLogger>();
 builder.Services.AddRazorPages();
-builder.Services.AddSingleton<BetaStatsPageBuilder>();
-builder.Services.AddSingleton(new BetaApplicationVersion(
+builder.Services.AddSingleton<StatsPageViewModelFactory>();
+builder.Services.AddSingleton(new ApplicationVersion(
     (System.Reflection.AssemblyInformationalVersionAttribute?)
         Attribute.GetCustomAttribute(
             typeof(Program).Assembly,
             typeof(System.Reflection.AssemblyInformationalVersionAttribute))
-        is { } betaVersion ? betaVersion.InformationalVersion : "unknown"));
+        is { } applicationVersion ? applicationVersion.InformationalVersion : "unknown"));
 
 var app = builder.Build();
-
-var version = (System.Reflection.AssemblyInformationalVersionAttribute?)
-    Attribute.GetCustomAttribute(
-        typeof(Program).Assembly,
-        typeof(System.Reflection.AssemblyInformationalVersionAttribute))
-    is { } infoAttr ? infoAttr.InformationalVersion : "unknown";
-
-// Read favicon from wwwroot/favicon.svg once at startup; serve explicitly to avoid static-file MIME/path issues.
-var faviconPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot", "favicon.svg");
-var faviconSvg = File.ReadAllText(faviconPath);
-app.MapGet("/favicon.svg", () => Results.Content(faviconSvg, "image/svg+xml"));
 
 var statsJsonOptions = new JsonSerializerOptions
 {
     PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
     WriteIndented = true,
 };
-app.MapPost("/stats/dismiss/{mode}", (string mode, StatsTracker st) =>
-{
-    if (!Enum.TryParse<PromptFailureMode>(mode, ignoreCase: true, out var parsed))
-        return Results.BadRequest($"Unknown failure mode: {mode}");
-    st.AcknowledgeFailureMode(parsed);
-    return Results.Redirect("/stats");
-});
-
-app.MapGet("/stats", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing, IOptions<StatsOptions> statsOptions) =>
-{
-    var provider = ParseProvider(ctx);
-    var today = st.ComputeCurrentStatsDay();
-    var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), today, today);
-    var currentMonth = LoadCurrentMonth(st, today);
-    return Results.Content(StatsHtmlRenderer.Render(st.GetSnapshot(), pricing, version, prev, next, provider,
-        currentMonth, statsOptions.Value.MonthlyTargetSpendUsd, metadata.GetSnapshot()), "text/html; charset=utf-8");
-});
 
 app.MapGet("/stats.json", (StatsTracker st) => Results.Json(st.GetSnapshot(), statsJsonOptions));
-
-app.MapGet("/stats/{date}", (string date, HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
-{
-    if (!DateOnly.TryParseExact(date, "yyyy-MM-dd", null, System.Globalization.DateTimeStyles.None, out var d))
-        return Results.BadRequest("Date must be yyyy-MM-dd.");
-    var snapshot = st.GetSnapshotForDate(d);
-    if (snapshot is null) return Results.NotFound($"No stats for {date}.");
-    var provider = ParseProvider(ctx);
-    var today = st.ComputeCurrentStatsDay();
-    var (prev, next) = StatsNavigation.AdjacentDates(st.GetAvailableDates(), d, today);
-    return Results.Content(StatsHtmlRenderer.Render(snapshot, pricing, version, prev, next, provider,
-        sessionMetadata: metadata.GetSnapshot()), "text/html; charset=utf-8");
-});
 
 app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
 {
@@ -110,14 +69,6 @@ app.MapGet("/stats/{date}.json", (string date, StatsTracker st) =>
     var snapshot = st.GetSnapshotForDate(d);
     return snapshot is null ? Results.NotFound($"No stats for {date}.") : Results.Json(snapshot, statsJsonOptions);
 });
-
-app.MapGet("/stats/week", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 7), pricing, "Last 7 days", "/stats/week", version,
-        ParseProvider(ctx), metadata.GetSnapshot()), "text/html; charset=utf-8"));
-
-app.MapGet("/stats/month", (HttpContext ctx, StatsTracker st, SessionMetadataStore metadata, PricingCatalog pricing) =>
-    Results.Content(StatsHtmlRenderer.RenderRange(LoadRange(st, 30), pricing, "Last 30 days", "/stats/month", version,
-        ParseProvider(ctx), metadata.GetSnapshot()), "text/html; charset=utf-8"));
 
 app.MapStaticAssets();
 app.MapRazorPages()
@@ -353,30 +304,6 @@ app.Map("{**path}", async (
 
 app.Run();
 
-static List<StatsSnapshot> LoadRange(StatsTracker st, int days)
-{
-    var today = st.ComputeCurrentStatsDay();
-    var list = new List<StatsSnapshot>(days);
-    for (var i = days - 1; i >= 0; i--)
-    {
-        var s = st.GetSnapshotForDate(today.AddDays(-i));
-        if (s is not null) list.Add(s);
-    }
-    return list;
-}
-
-static List<StatsSnapshot> LoadCurrentMonth(StatsTracker st, DateOnly today)
-{
-    var firstDay = new DateOnly(today.Year, today.Month, 1);
-    var list = new List<StatsSnapshot>(today.Day);
-    for (var date = firstDay; date <= today; date = date.AddDays(1))
-    {
-        var snapshot = st.GetSnapshotForDate(date);
-        if (snapshot is not null) list.Add(snapshot);
-    }
-    return list;
-}
-
 static string? ExtractModel(string? path)
 {
     if (path is null) return null;
@@ -391,13 +318,6 @@ static string? HeaderValue(HttpRequest request, string name)
 {
     var value = request.Headers[name].FirstOrDefault();
     return string.IsNullOrWhiteSpace(value) ? null : value;
-}
-
-// Returns "vertex", "anthropic", or null (meaning all providers).
-static string? ParseProvider(HttpContext ctx)
-{
-    var p = ctx.Request.Query["provider"].FirstOrDefault()?.ToLowerInvariant();
-    return p is "vertex" or "anthropic" ? p : null;
 }
 
 public partial class Program { }

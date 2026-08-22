@@ -1,4 +1,4 @@
-@model IReadOnlyList<BetaSessionRowViewModel>
+@model IReadOnlyList<SessionRowViewModel>
 
 @if (Model.Count > 0)
 {
@@ -9,16 +9,16 @@
             <tbody>
             @foreach (var row in Model)
             {
-                <tr class="@(row.Kind == BetaSessionRowKind.Session ? "session-total" : "")" data-row-kind="@row.Kind" data-depth="@row.Depth">
+                <tr class="@(row.Kind == SessionRowKind.Session ? "session-total" : "")" data-row-kind="@row.Kind" data-depth="@row.Depth">
                     <td>
                         <div class="agent-label" style="padding-left:@((row.Depth * 1.25m).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))rem">
-                            @if (row.Kind == BetaSessionRowKind.Session)
+                            @if (row.Kind == SessionRowKind.Session)
                             {
                                 <strong>@row.Label</strong>
                                 @if (row.IsUnattributed){<div class="muted">no Claude Code session ID</div>}
                                 else{<div class="muted">session <span class="mono session-id">@row.Id</span></div>}
                             }
-                            else if (row.Kind == BetaSessionRowKind.MainAgent)
+                            else if (row.Kind == SessionRowKind.MainAgent)
                             {
                                 <strong>Main agent</strong>
                             }
@@ -33,8 +33,8 @@
                             @if (row.ParentMissing && row.ParentAgentId is not null){<span class="muted"> parent: @row.ParentAgentId (not observed)</span>}
                         </div>
                     </td>
-                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
-                    <td class="num">@BetaStatsDisplay.Number(row.InputTokens)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                    <td class="num">@StatsDisplay.Number(row.Requests)</td><td class="num @(row.Failed > 0 ? "err" : "")">@StatsDisplay.Number(row.Failed)</td>
+                    <td class="num">@StatsDisplay.Number(row.InputTokens)</td><td class="num">@StatsDisplay.Number(row.Output)</td><td class="num cost">@StatsDisplay.Money(row.Cost)</td>
                 </tr>
             }
             </tbody>

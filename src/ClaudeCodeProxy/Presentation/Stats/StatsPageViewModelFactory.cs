@@ -1,8 +1,8 @@
 using System.Globalization;
 
-namespace ClaudeCodeProxy.Beta;
+namespace ClaudeCodeProxy.Presentation.Stats;
 
-public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
+public sealed class StatsPageViewModelFactory(PricingCatalog pricing)
 {
     public static string? NormalizeProvider(string? value)
     {
@@ -10,7 +10,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         return normalized is "vertex" or "anthropic" ? normalized : null;
     }
 
-    public BetaStatsPageViewModel BuildDaily(
+    public StatsPageViewModel BuildDaily(
         StatsSnapshot snapshot,
         DateOnly? previousDate,
         DateOnly? nextDate,
@@ -21,7 +21,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
     {
         var filteredModels = FilteredModels(snapshot, provider);
         var snapshotDate = SnapshotDate(snapshot);
-        var modelRows = new List<BetaModelRowViewModel>();
+        var modelRows = new List<ModelRowViewModel>();
         long requests = 0, failed = 0, uncached = 0, read = 0, cc5m = 0, cc1h = 0, output = 0;
         decimal totalCost = 0m;
 
@@ -38,7 +38,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             var cost = pricing.CalculateCostUsd(modelName, model.InputUncached, model.CacheRead,
                 model.CacheCreation5m, model.CacheCreation1h, model.Output, snapshotDate);
             totalCost += cost;
-            modelRows.Add(new BetaModelRowViewModel(modelName, model.Provider, model.Requests, model.Failed,
+            modelRows.Add(new ModelRowViewModel(modelName, model.Provider, model.Requests, model.Failed,
                 model.HitRatePct, model.AvgDurationMs, model.CacheRead, model.CacheCreation,
                 model.InputUncached, model.Output, cost));
         }
@@ -52,14 +52,14 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         var isHistorical = snapshot.UptimeSeconds < 0;
         var subtitle = isHistorical
             ? $"stats for {snapshot.Date} · historical"
-            : $"stats for {snapshot.Date} · uptime: {BetaStatsDisplay.Uptime(snapshot.UptimeSeconds)}";
+            : $"stats for {snapshot.Date} · uptime: {StatsDisplay.Uptime(snapshot.UptimeSeconds)}";
 
         var hours = BuildHourlyRows(snapshot, filteredModels, provider, snapshotDate);
         var endpoints = snapshot.ByEndpoint
             .Where(pair => provider is null || pair.Value.Provider == provider)
             .OrderBy(pair => pair.Value.Provider, StringComparer.Ordinal)
             .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => new BetaEndpointRowViewModel(pair.Key, pair.Value.Provider,
+            .Select(pair => new EndpointRowViewModel(pair.Key, pair.Value.Provider,
                 pair.Value.Requests, pair.Value.Failed))
             .ToList();
 
@@ -67,21 +67,21 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             ? BuildMonthSpend(currentMonthSnapshots, provider, currentDate, monthlyTargetSpendUsd)
             : null;
 
-        return new BetaStatsPageViewModel(
+        return new StatsPageViewModel(
             $"Claude Code Proxy — {snapshot.Date}",
             subtitle,
             provider is null ? "Today" : $"Today ({provider})",
-            isHistorical ? "/Beta/Stats/Day" : "/Beta/Stats/Index",
+            isHistorical ? "/Stats/Day" : "/Stats/Index",
             isHistorical ? snapshot.Date : null,
             provider,
             previousDate,
             nextDate,
             isHistorical,
             IsRange: false,
-            new BetaSummaryViewModel(requests, failed, snapshot.InjectedRequests,
+            new SummaryViewModel(requests, failed, snapshot.InjectedRequests,
                 snapshot.PassedThroughRequests, hitRate, input, snapshot.AvgDurationMs,
                 totalCost, provider is not null),
-            new BetaTokenTotalsViewModel(read, cc5m + cc1h, uncached, output),
+            new TokenTotalsViewModel(read, cc5m + cc1h, uncached, output),
             BuildFailureBanners(snapshot.RewriteFailures, snapshot.AcknowledgedFailures, snapshot.UnknownPaths),
             modelRows,
             [],
@@ -91,7 +91,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             monthSpend);
     }
 
-    public BetaStatsPageViewModel BuildRange(
+    public StatsPageViewModel BuildRange(
         IReadOnlyList<StatsSnapshot> snapshots,
         string title,
         string currentPage,
@@ -153,7 +153,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         var endpoints = mergedEndpoints
             .OrderBy(pair => pair.Value.Provider, StringComparer.Ordinal)
             .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-            .Select(pair => new BetaEndpointRowViewModel(pair.Key, pair.Value.Provider,
+            .Select(pair => new EndpointRowViewModel(pair.Key, pair.Value.Provider,
                 pair.Value.Requests, pair.Value.Failed))
             .ToList();
 
@@ -161,7 +161,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             .Select(snapshot => BuildDayRow(snapshot, provider))
             .ToList();
 
-        return new BetaStatsPageViewModel(
+        return new StatsPageViewModel(
             $"Claude Code Proxy — {title}",
             $"{title} · {snapshots.Count} day{(snapshots.Count == 1 ? "" : "s")} of data",
             "Totals",
@@ -172,9 +172,9 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             null,
             IsHistorical: false,
             IsRange: true,
-            new BetaSummaryViewModel(requests, failed, injected, passedThrough, hitRate, input,
+            new SummaryViewModel(requests, failed, injected, passedThrough, hitRate, input,
                 AvgDurationMs: null, totalCost, provider is not null),
-            new BetaTokenTotalsViewModel(read, cc5m + cc1h, uncached, output),
+            new TokenTotalsViewModel(read, cc5m + cc1h, uncached, output),
             BuildFailureBanners(failures, acknowledged, unknownPaths),
             models,
             days,
@@ -184,7 +184,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             null);
     }
 
-    private BetaDayRowViewModel BuildDayRow(StatsSnapshot snapshot, string? provider)
+    private DayRowViewModel BuildDayRow(StatsSnapshot snapshot, string? provider)
     {
         long requests = 0, failed = 0, uncached = 0, read = 0, cc5m = 0, cc1h = 0, output = 0;
         decimal cost = 0m;
@@ -204,18 +204,18 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         }
 
         var input = uncached + read + cc5m + cc1h;
-        return new BetaDayRowViewModel(snapshot.Date, snapshot.UptimeSeconds >= 0, requests, failed,
+        return new DayRowViewModel(snapshot.Date, snapshot.UptimeSeconds >= 0, requests, failed,
             input > 0 ? 100.0 * read / input : 0, snapshot.AvgDurationMs, input, output, cost);
     }
 
-    private IReadOnlyList<BetaHourlyRowViewModel> BuildHourlyRows(
+    private IReadOnlyList<HourlyRowViewModel> BuildHourlyRows(
         StatsSnapshot snapshot,
         IReadOnlyDictionary<string, ModelSnapshot> filteredModels,
         string? provider,
         DateOnly? snapshotDate)
     {
         var blended = ComputeBlendedRates(filteredModels, snapshotDate);
-        var rows = new List<BetaHourlyRowViewModel>();
+        var rows = new List<HourlyRowViewModel>();
         foreach (var hour in snapshot.Hourly)
         {
             var providerHour = provider is not null ? hour.ByProvider?.GetValueOrDefault(provider) : null;
@@ -235,14 +235,14 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
                    + cc1h * blended.Value.CacheWrite1h
                    + output * blended.Value.Output) / 1_000_000m
                 : 0m;
-            rows.Add(new BetaHourlyRowViewModel(
+            rows.Add(new HourlyRowViewModel(
                 hour.Hour.LocalDateTime.ToString("HH:mm", CultureInfo.InvariantCulture),
                 requests, failed, hitRate, avgMs, read, cc5m + cc1h, uncached, output, cost));
         }
         return rows;
     }
 
-    private BetaMonthSpendViewModel BuildMonthSpend(
+    private MonthSpendViewModel BuildMonthSpend(
         IReadOnlyList<StatsSnapshot> snapshots,
         string? provider,
         DateOnly currentDate,
@@ -260,7 +260,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         }
 
         var daysInMonth = DateTime.DaysInMonth(currentDate.Year, currentDate.Month);
-        return new BetaMonthSpendViewModel(
+        return new MonthSpendViewModel(
             currentDate.ToString("MMMM yyyy", CultureInfo.InvariantCulture) + " daily spend",
             monthToDateCost / currentDate.Day,
             monthlyTargetSpendUsd / daysInMonth,
@@ -269,7 +269,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             daysInMonth);
     }
 
-    private IReadOnlyList<BetaSessionRowViewModel> BuildSessionRows(
+    private IReadOnlyList<SessionRowViewModel> BuildSessionRows(
         IEnumerable<(StatsSnapshot Snapshot, DateOnly? Date)> snapshots,
         string? provider,
         SessionMetadataSnapshot? metadata)
@@ -302,7 +302,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             }
         }
 
-        var output = new List<BetaSessionRowViewModel>();
+        var output = new List<SessionRowViewModel>();
         foreach (var session in sessions.Values
             .Where(session => session.Metrics.HasData)
             .OrderBy(session => session.SessionId is null ? 1 : 0)
@@ -323,16 +323,16 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
         return output;
     }
 
-    private static BetaSessionRowViewModel ToSessionViewModel(MutableSession session, string label)
+    private static SessionRowViewModel ToSessionViewModel(MutableSession session, string label)
     {
         var metrics = session.Metrics;
-        return new BetaSessionRowViewModel(BetaSessionRowKind.Session, 0, label, session.SessionId,
+        return new SessionRowViewModel(SessionRowKind.Session, 0, label, session.SessionId,
             null, false, session.SessionId is null, metrics.Requests, metrics.Failed,
             metrics.InputTokens, metrics.Output, session.Cost);
     }
 
     private static void AppendAgentRows(
-        ICollection<BetaSessionRowViewModel> output,
+        ICollection<SessionRowViewModel> output,
         MutableSession session,
         IReadOnlyDictionary<string, AgentMetadataSnapshot>? metadata)
     {
@@ -368,7 +368,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
     }
 
     private static void AppendAgentBranch(
-        ICollection<BetaSessionRowViewModel> output,
+        ICollection<SessionRowViewModel> output,
         MutableAgent agent,
         int depth,
         bool parentMissing,
@@ -378,7 +378,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
     {
         if (agent.AgentId is not null && !visited.Add(agent.AgentId)) return;
         var metrics = agent.Metrics;
-        var kind = agent.AgentId is null ? BetaSessionRowKind.MainAgent : BetaSessionRowKind.Agent;
+        var kind = agent.AgentId is null ? SessionRowKind.MainAgent : SessionRowKind.Agent;
         string label;
         if (agent.AgentId is null)
         {
@@ -390,7 +390,7 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             label = string.IsNullOrWhiteSpace(agentType) ? "Agent" : agentType;
         }
 
-        output.Add(new BetaSessionRowViewModel(kind, depth, label, agent.AgentId,
+        output.Add(new SessionRowViewModel(kind, depth, label, agent.AgentId,
             agent.ParentAgentId, parentMissing, false, metrics.Requests, metrics.Failed,
             metrics.InputTokens, metrics.Output, agent.Cost));
 
@@ -425,12 +425,12 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             : SessionMetrics.Empty;
     }
 
-    private static IReadOnlyList<BetaFailureBannerViewModel> BuildFailureBanners(
+    private static IReadOnlyList<FailureBannerViewModel> BuildFailureBanners(
         IReadOnlyDictionary<PromptFailureMode, long> failures,
         IReadOnlyDictionary<PromptFailureMode, long> acknowledged,
         IReadOnlyList<string> unknownPaths) =>
         failures
-            .Select(pair => new BetaFailureBannerViewModel(pair.Key,
+            .Select(pair => new FailureBannerViewModel(pair.Key,
                 pair.Value - acknowledged.GetValueOrDefault(pair.Key),
                 pair.Key == PromptFailureMode.UnknownPath ? unknownPaths : []))
             .Where(banner => banner.Count > 0)
@@ -499,11 +499,11 @@ public sealed class BetaStatsPageBuilder(PricingCatalog pricing)
             Cost += cost;
         }
 
-        public BetaModelRowViewModel ToViewModel()
+        public ModelRowViewModel ToViewModel()
         {
             var input = InputUncached + CacheRead + CacheCreation;
             var hitRate = input > 0 ? 100.0 * CacheRead / input : 0;
-            return new BetaModelRowViewModel(Model, Provider, Requests, Failed, hitRate, null,
+            return new ModelRowViewModel(Model, Provider, Requests, Failed, hitRate, null,
                 CacheRead, CacheCreation, InputUncached, Output, Cost);
         }
     }

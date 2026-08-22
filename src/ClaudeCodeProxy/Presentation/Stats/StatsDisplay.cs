@@ -1,8 +1,8 @@
 using System.Globalization;
 
-namespace ClaudeCodeProxy.Beta;
+namespace ClaudeCodeProxy.Presentation.Stats;
 
-public static class BetaStatsDisplay
+public static class StatsDisplay
 {
     public static string Number(long value) => value.ToString("N0", CultureInfo.InvariantCulture);
 

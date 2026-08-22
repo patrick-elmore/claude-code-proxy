@@ -1,4 +1,4 @@
-@model IReadOnlyList<BetaFailureBannerViewModel>
+@model IReadOnlyList<FailureBannerViewModel>
 
 @foreach (var banner in Model)
 {
@@ -7,7 +7,7 @@
         <div class="failure-message">
             <span aria-hidden="true">&#9888;</span>
             <div class="failure-copy">
-                <strong>@BetaStatsDisplay.Number(banner.Count) @requestWord</strong>
+                <strong>@StatsDisplay.Number(banner.Count) @requestWord</strong>
                 @switch (banner.Mode)
                 {
                     case PromptFailureMode.UnknownPath:
@@ -46,7 +46,7 @@
                 }
             </div>
         </div>
-        <form method="post" asp-page="/Beta/Stats/Dismiss" asp-route-mode="@banner.Mode">
+        <form method="post" asp-page="/Stats/Dismiss" asp-route-mode="@banner.Mode">
             <button type="submit" class="dismiss-btn">Dismiss</button>
         </form>
     </div>

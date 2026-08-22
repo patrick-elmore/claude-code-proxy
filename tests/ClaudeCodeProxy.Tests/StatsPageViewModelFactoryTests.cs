@@ -1,10 +1,10 @@
-using ClaudeCodeProxy.Beta;
+using ClaudeCodeProxy.Presentation.Stats;
 using Microsoft.Extensions.Logging.Abstractions;
 using Shouldly;
 
 namespace ClaudeCodeProxy.Tests;
 
-public sealed class BetaStatsPageBuilderTests
+public sealed class StatsPageViewModelFactoryTests
 {
     private readonly PricingCatalog _pricing = new(NullLogger<PricingCatalog>.Instance);
 
@@ -22,7 +22,7 @@ public sealed class BetaStatsPageBuilderTests
             },
         };
 
-        var view = new BetaStatsPageBuilder(_pricing).BuildDaily(snapshot, null, null, "vertex",
+        var view = new StatsPageViewModelFactory(_pricing).BuildDaily(snapshot, null, null, "vertex",
             null, 5500m, null);
 
         view.Summary.Requests.ShouldBe(2);
@@ -48,8 +48,8 @@ public sealed class BetaStatsPageBuilderTests
             PassedThroughRequests = 3,
         };
 
-        var view = new BetaStatsPageBuilder(_pricing).BuildRange(
-            [first, second], "Last 7 days", "/Beta/Stats/Week", null, null);
+        var view = new StatsPageViewModelFactory(_pricing).BuildRange(
+            [first, second], "Last 7 days", "/Stats/Week", null, null);
 
         view.Summary.Requests.ShouldBe(2);
         view.Summary.InjectedRequests.ShouldBe(6);
@@ -76,7 +76,7 @@ public sealed class BetaStatsPageBuilderTests
             ],
         };
 
-        var view = new BetaStatsPageBuilder(_pricing).BuildDaily(snapshot, null, null, null,
+        var view = new StatsPageViewModelFactory(_pricing).BuildDaily(snapshot, null, null, null,
             null, 5500m, null);
 
         view.Sessions.Count.ShouldBe(7);

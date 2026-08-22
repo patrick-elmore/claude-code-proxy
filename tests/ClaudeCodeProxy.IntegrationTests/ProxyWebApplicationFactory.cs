@@ -6,7 +6,7 @@ namespace ClaudeCodeProxy.IntegrationTests;
 public sealed class ProxyWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _statsDirectory = Path.Combine(
-        Path.GetTempPath(), "claude-code-proxy-beta-tests", Guid.NewGuid().ToString("N"));
+        Path.GetTempPath(), "claude-code-proxy-stats-tests", Guid.NewGuid().ToString("N"));
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {

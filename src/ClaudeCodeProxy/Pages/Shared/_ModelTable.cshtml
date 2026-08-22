@@ -1,4 +1,4 @@
-@model BetaStatsPageViewModel
+@model StatsPageViewModel
 
 @if (Model.Models.Count > 0)
 {
@@ -15,12 +15,12 @@
             {
                 <tr>
                     <td class="mono">@row.Model@if (Model.Provider is null && row.Provider is not null){<span class="muted"> (@row.Provider)</span>}</td>
-                    <td class="num">@BetaStatsDisplay.Number(row.Requests)</td>
-                    <td class="num @(row.Failed > 0 ? "err" : "")">@BetaStatsDisplay.Number(row.Failed)</td>
-                    <td class="num @BetaStatsDisplay.HitClass(row.HitRatePct)">@BetaStatsDisplay.Percent(row.HitRatePct)</td>
-                    @if (!Model.IsRange){<td class="num">@BetaStatsDisplay.Milliseconds(row.AvgDurationMs ?? 0)</td>}
-                    <td class="num">@BetaStatsDisplay.Number(row.CacheRead)</td><td class="num">@BetaStatsDisplay.Number(row.CacheCreation)</td>
-                    <td class="num">@BetaStatsDisplay.Number(row.InputUncached)</td><td class="num">@BetaStatsDisplay.Number(row.Output)</td><td class="num cost">@BetaStatsDisplay.Money(row.Cost)</td>
+                    <td class="num">@StatsDisplay.Number(row.Requests)</td>
+                    <td class="num @(row.Failed > 0 ? "err" : "")">@StatsDisplay.Number(row.Failed)</td>
+                    <td class="num @StatsDisplay.HitClass(row.HitRatePct)">@StatsDisplay.Percent(row.HitRatePct)</td>
+                    @if (!Model.IsRange){<td class="num">@StatsDisplay.Milliseconds(row.AvgDurationMs ?? 0)</td>}
+                    <td class="num">@StatsDisplay.Number(row.CacheRead)</td><td class="num">@StatsDisplay.Number(row.CacheCreation)</td>
+                    <td class="num">@StatsDisplay.Number(row.InputUncached)</td><td class="num">@StatsDisplay.Number(row.Output)</td><td class="num cost">@StatsDisplay.Money(row.Cost)</td>
                 </tr>
             }
             </tbody>

@@ -1,0 +1,6 @@
+@page "/stats/{date}"
+@model ClaudeCodeProxy.Pages.Stats.DayModel
+@{
+    ViewData["Title"] = Model.View.DocumentTitle;
+}
+<partial name="_StatsPage" model="Model.View" />

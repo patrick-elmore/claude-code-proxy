@@ -1,20 +1,20 @@
-@model BetaStatsPageViewModel
+@model StatsPageViewModel
 
 <nav aria-label="Stats navigation">
     <span class="nav-left">
         @if (Model.PreviousDate.HasValue)
         {
-            <a asp-page="/Beta/Stats/Day" asp-route-date="@Model.PreviousDate.Value.ToString("yyyy-MM-dd")" asp-route-provider="@Model.Provider">&#8592; @Model.PreviousDate.Value.ToString("yyyy-MM-dd")</a><span class="sep">|</span>
+            <a asp-page="/Stats/Day" asp-route-date="@Model.PreviousDate.Value.ToString("yyyy-MM-dd")" asp-route-provider="@Model.Provider">&#8592; @Model.PreviousDate.Value.ToString("yyyy-MM-dd")</a><span class="sep">|</span>
         }
         @if (Model.IsHistorical || Model.IsRange)
         {
-            <a asp-page="/Beta/Stats/Index" asp-route-provider="@Model.Provider">Today</a><span class="sep">|</span>
+            <a asp-page="/Stats/Index" asp-route-provider="@Model.Provider">Today</a><span class="sep">|</span>
         }
-        <a asp-page="/Beta/Stats/Week" asp-route-provider="@Model.Provider">Week</a><span class="sep">|</span>
-        <a asp-page="/Beta/Stats/Month" asp-route-provider="@Model.Provider">Month</a>
+        <a asp-page="/Stats/Week" asp-route-provider="@Model.Provider">Week</a><span class="sep">|</span>
+        <a asp-page="/Stats/Month" asp-route-provider="@Model.Provider">Month</a>
         @if (Model.NextDate.HasValue)
         {
-            <span class="sep">|</span><a asp-page="/Beta/Stats/Day" asp-route-date="@Model.NextDate.Value.ToString("yyyy-MM-dd")" asp-route-provider="@Model.Provider">@Model.NextDate.Value.ToString("yyyy-MM-dd") &#8594;</a>
+            <span class="sep">|</span><a asp-page="/Stats/Day" asp-route-date="@Model.NextDate.Value.ToString("yyyy-MM-dd")" asp-route-provider="@Model.Provider">@Model.NextDate.Value.ToString("yyyy-MM-dd") &#8594;</a>
         }
     </span>
     <span class="nav-right" aria-label="Provider filter">
