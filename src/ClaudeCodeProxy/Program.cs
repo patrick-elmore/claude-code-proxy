@@ -36,6 +36,13 @@ builder.Services.AddHttpClient("vertex", client =>
     client.Timeout = Timeout.InfiniteTimeSpan;
 });
 
+builder.Services.AddHttpClient("pricing-docs", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("ClaudeCodeProxy/1.0");
+});
+
+builder.Services.AddHostedService<PricingUpdater>();
 builder.Services.AddSingleton<PromptRewriter>();
 builder.Services.AddSingleton<RequestDumper>();
 builder.Services.AddSingleton<HeaderDumper>();

@@ -8,7 +8,8 @@ namespace ClaudeCodeProxy;
 // Promotions are date-bounded rate overrides; the first window containing the requested date wins.
 public sealed class PricingCatalog
 {
-    private readonly FrozenDictionary<string, ModelPricing> _models;
+    // volatile so PricingUpdater can atomically swap the catalog hourly without a lock on the read path.
+    private volatile FrozenDictionary<string, ModelPricing> _models;
     private readonly ILogger<PricingCatalog> _logger;
     private readonly HashSet<string> _missingModels = new();
     private readonly Lock _missingLock = new();
@@ -25,8 +26,31 @@ public sealed class PricingCatalog
         }
 
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
+        _models = ParseModels(doc.RootElement.GetProperty("models"));
+        _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _models.Count, path);
+    }
+
+    public bool Reload(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var newModels = ParseModels(doc.RootElement.GetProperty("models"));
+            _models = newModels;
+            _logger.LogInformation("Pricing reloaded: {Count} models", newModels.Count);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to parse pricing JSON for reload");
+            return false;
+        }
+    }
+
+    private static FrozenDictionary<string, ModelPricing> ParseModels(JsonElement modelsElement)
+    {
         var models = new Dictionary<string, ModelPricing>();
-        foreach (var prop in doc.RootElement.GetProperty("models").EnumerateObject())
+        foreach (var prop in modelsElement.EnumerateObject())
         {
             var standard = ReadRates(prop.Value.GetProperty("standard"));
             var promotions = Array.Empty<Promotion>();
@@ -40,8 +64,7 @@ public sealed class PricingCatalog
             }
             models[prop.Name] = new ModelPricing(standard, promotions);
         }
-        _models = models.ToFrozenDictionary();
-        _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _models.Count, path);
+        return models.ToFrozenDictionary();
     }
 
     private static RateBlock ReadRates(JsonElement e) => new(

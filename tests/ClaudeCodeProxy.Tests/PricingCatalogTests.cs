@@ -73,4 +73,41 @@ public sealed class PricingCatalogTests
 
         catalog.TryGetRates("no-such-model", out _).ShouldBeFalse();
     }
+
+    [Fact]
+    public void Reload_WithValidJson_SwapsRatesLive()
+    {
+        var catalog = Build();
+
+        var result = catalog.Reload("""
+            {
+              "models": {
+                "test-model": {
+                  "standard": {
+                    "input": 5.0, "output": 25.0,
+                    "cache_write_5m": 6.25, "cache_write_1h": 10.0, "cache_hit": 0.5
+                  }
+                }
+              }
+            }
+            """);
+
+        result.ShouldBeTrue();
+        catalog.TryGetRates("test-model", out var rates).ShouldBeTrue();
+        rates.Input.ShouldBe(5.0m);
+        rates.Output.ShouldBe(25.0m);
+    }
+
+    [Fact]
+    public void Reload_WithInvalidJson_ReturnsFalseAndKeepsOldRates()
+    {
+        var catalog = Build();
+
+        var result = catalog.Reload("not valid json {{");
+
+        result.ShouldBeFalse();
+        // original rates still live
+        catalog.TryGetRates("test-model", out var rates).ShouldBeTrue();
+        rates.Input.ShouldBe(3.0m);
+    }
 }

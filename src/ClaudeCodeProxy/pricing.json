@@ -9,6 +9,23 @@
     "A model may have an optional 'promotions' array of date-bounded rate overrides: { description, starts, ends, rates }. Dates are yyyy-MM-dd, inclusive on both ends, evaluated in local time. 'rates' has the same shape as 'standard'. The first window containing the date wins; outside all windows, 'standard' applies. Managed by the update-pricing skill."
   ],
   "models": {
+    "claude-fable-5-1": {
+      "display_name": "Claude Fable 5.1",
+      "standard": {
+        "input": 10.00,
+        "output": 50.00,
+        "cache_write_5m": 12.50,
+        "cache_write_1h": 20.00,
+        "cache_hit": 0.25
+      },
+      "long_context": {
+        "input": 10.00,
+        "output": 50.00,
+        "cache_write_5m": 12.50,
+        "cache_write_1h": 20.00,
+        "cache_hit": 0.25
+      }
+    },
     "claude-fable-5": {
       "display_name": "Claude Fable 5",
       "standard": {
@@ -144,32 +161,18 @@
     "claude-sonnet-5": {
       "display_name": "Claude Sonnet 5",
       "standard": {
-        "input": 3.00,
-        "output": 15.00,
-        "cache_write_5m": 3.75,
-        "cache_write_1h": 6.00,
-        "cache_hit": 0.30
+        "input": 2.00,
+        "output": 10.00,
+        "cache_write_5m": 2.50,
+        "cache_write_1h": 4.00,
+        "cache_hit": 0.20
       },
-      "promotions": [
-        {
-          "description": "Introductory pricing of $2/$10 per million input/output tokens is in effect through August 31, 2026, after which the standard pricing of $3/$15 per million input/output tokens will take effect.",
-          "starts": "2026-07-01",
-          "ends": "2026-08-31",
-          "rates": {
-            "input": 2.00,
-            "output": 10.00,
-            "cache_write_5m": 2.50,
-            "cache_write_1h": 4.00,
-            "cache_hit": 0.20
-          }
-        }
-      ],
       "long_context": {
-        "input": 3.00,
-        "output": 15.00,
-        "cache_write_5m": 3.75,
-        "cache_write_1h": 6.00,
-        "cache_hit": 0.30
+        "input": 2.00,
+        "output": 10.00,
+        "cache_write_5m": 2.50,
+        "cache_write_1h": 4.00,
+        "cache_hit": 0.20
       }
     },
     "claude-sonnet-4-6": {
