@@ -14,6 +14,8 @@ public sealed class PricingCatalog
     private readonly HashSet<string> _missingModels = new();
     private readonly Lock _missingLock = new();
 
+    public DateTimeOffset? LastLoadedAt { get; private set; }
+
     public PricingCatalog(ILogger<PricingCatalog> logger)
     {
         _logger = logger;
@@ -27,6 +29,7 @@ public sealed class PricingCatalog
 
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
         _models = ParseModels(doc.RootElement.GetProperty("models"));
+        LastLoadedAt = DateTimeOffset.UtcNow;
         _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _models.Count, path);
     }
 
@@ -37,6 +40,7 @@ public sealed class PricingCatalog
             using var doc = JsonDocument.Parse(json);
             var newModels = ParseModels(doc.RootElement.GetProperty("models"));
             _models = newModels;
+            LastLoadedAt = DateTimeOffset.UtcNow;
             _logger.LogInformation("Pricing reloaded: {Count} models", newModels.Count);
             return true;
         }
@@ -47,11 +51,32 @@ public sealed class PricingCatalog
         }
     }
 
+    public IReadOnlyList<PricingRow> GetAllCurrentRates(DateOnly? onDate = null)
+    {
+        var snap = _models; // single volatile read → consistent snapshot
+        var date = onDate ?? DateOnly.FromDateTime(DateTime.Now);
+        return snap
+            .Select(kvp =>
+            {
+                var rates = kvp.Value.Standard;
+                foreach (var promo in kvp.Value.Promotions)
+                {
+                    if (date >= promo.Starts && date <= promo.Ends) { rates = promo.Rates; break; }
+                }
+                return new PricingRow(kvp.Key, kvp.Value.DisplayName, rates);
+            })
+            .OrderByDescending(r => r.Rates.Input)
+            .ThenBy(r => r.ModelId)
+            .ToList();
+    }
+
     private static FrozenDictionary<string, ModelPricing> ParseModels(JsonElement modelsElement)
     {
         var models = new Dictionary<string, ModelPricing>();
         foreach (var prop in modelsElement.EnumerateObject())
         {
+            var displayName = prop.Value.TryGetProperty("display_name", out var dn)
+                ? dn.GetString() ?? prop.Name : prop.Name;
             var standard = ReadRates(prop.Value.GetProperty("standard"));
             var promotions = Array.Empty<Promotion>();
             if (prop.Value.TryGetProperty("promotions", out var promoArray))
@@ -62,7 +87,7 @@ public sealed class PricingCatalog
                     Rates: ReadRates(p.GetProperty("rates"))
                 )).ToArray();
             }
-            models[prop.Name] = new ModelPricing(standard, promotions);
+            models[prop.Name] = new ModelPricing(displayName, standard, promotions);
         }
         return models.ToFrozenDictionary();
     }
@@ -124,7 +149,9 @@ public sealed class PricingCatalog
         return idx > 0 ? model[..idx] : model;
     }
 
-    private sealed record ModelPricing(RateBlock Standard, Promotion[] Promotions);
+    public sealed record PricingRow(string ModelId, string DisplayName, RateBlock Rates);
+
+    private sealed record ModelPricing(string DisplayName, RateBlock Standard, Promotion[] Promotions);
 
     private readonly record struct Promotion(DateOnly Starts, DateOnly Ends, RateBlock Rates);
 

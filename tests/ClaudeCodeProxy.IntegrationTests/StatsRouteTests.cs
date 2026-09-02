@@ -60,8 +60,10 @@ public sealed class StatsRouteTests : IClassFixture<ProxyWebApplicationFactory>
             .Select(endpoint => ((RouteEndpoint)endpoint).RoutePattern.RawText)
             .ToList();
 
-        pageRoutes.Count.ShouldBe(5);
-        pageRoutes.ShouldAllBe(route => route!.TrimStart('/').StartsWith("stats", StringComparison.Ordinal));
+        pageRoutes.Count.ShouldBe(6);
+        pageRoutes.ShouldAllBe(route =>
+            route!.TrimStart('/').StartsWith("stats", StringComparison.Ordinal) ||
+            route!.TrimStart('/').StartsWith("pricing", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -76,7 +78,9 @@ public sealed class StatsRouteTests : IClassFixture<ProxyWebApplicationFactory>
 
         var pageLinks = document.QuerySelectorAll("nav a, footer a")
             .Select(link => link.GetAttribute("href"))
-            .Where(href => href is not null && !href.StartsWith("/stats.json", StringComparison.Ordinal))
+            .Where(href => href is not null
+                && !href.StartsWith("/stats.json", StringComparison.Ordinal)
+                && !href.StartsWith("/pricing", StringComparison.Ordinal))
             .ToList();
         pageLinks.ShouldNotBeEmpty();
         pageLinks.ShouldAllBe(href => href!.StartsWith("/stats", StringComparison.Ordinal));

@@ -1,0 +1,53 @@
+@page "/pricing"
+@model ClaudeCodeProxy.Pages.Pricing.IndexModel
+@inject ApplicationVersion AppVersion
+@{
+    ViewData["Title"] = "Pricing — Claude Code Proxy";
+}
+<header class="page-header">
+    <div class="page-header-text"><h1>Claude Code Proxy</h1><p class="muted">Pricing</p></div>
+    <div class="page-header-icon"><partial name="_HeaderIcon" /></div>
+</header>
+<section>
+    <h2>Current rates <span class="muted" style="font-weight:normal;font-size:.85rem;">USD / million tokens</span></h2>
+    <div class="table-wrap"><table>
+        <thead><tr>
+            <th scope="col">model</th>
+            <th scope="col" class="num">input</th>
+            <th scope="col" class="num">output</th>
+            <th scope="col" class="num">5m cache write</th>
+            <th scope="col" class="num">1h cache write</th>
+            <th scope="col" class="num">cache read</th>
+        </tr></thead>
+        <tbody>
+        @foreach (var row in Model.Rows)
+        {
+            <tr>
+                <td>
+                    <span class="mono">@row.ModelId</span>
+                    @if (row.DisplayName != row.ModelId) { <span class="muted">@row.DisplayName</span> }
+                </td>
+                <td class="num">@Price(row.Rates.Input)</td>
+                <td class="num">@Price(row.Rates.Output)</td>
+                <td class="num">@Price(row.Rates.CacheWrite5m)</td>
+                <td class="num">@Price(row.Rates.CacheWrite1h)</td>
+                <td class="num">@Price(row.Rates.CacheHit)</td>
+            </tr>
+        }
+        </tbody>
+    </table></div>
+    <p class="muted" style="margin-top:.6rem;font-size:.85rem;">
+        @if (Model.LastLoadedAt.HasValue)
+        {
+            <text>Updated @Model.LastLoadedAt.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm") · </text>
+        }
+        <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Anthropic pricing docs ↗</a>
+    </p>
+</section>
+<footer>
+    <a asp-page="/Stats/Index">← stats</a>
+    <span class="version">v@AppVersion.Value</span>
+</footer>
+@functions {
+    static string Price(decimal v) => $"${v:0.##}";
+}
