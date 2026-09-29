@@ -60,6 +60,23 @@
         "cache_hit": 1.00
       }
     },
+    "claude-opus-5-5": {
+      "display_name": "Claude Opus 5.5",
+      "standard": {
+        "input": 4.00,
+        "output": 20.00,
+        "cache_write_5m": 5.00,
+        "cache_write_1h": 8.00,
+        "cache_hit": 0.20
+      },
+      "long_context": {
+        "input": 4.00,
+        "output": 20.00,
+        "cache_write_5m": 5.00,
+        "cache_write_1h": 8.00,
+        "cache_hit": 0.20
+      }
+    },
     "claude-opus-5": {
       "display_name": "Claude Opus 5",
       "standard": {
@@ -156,6 +173,23 @@
         "cache_write_5m": 18.75,
         "cache_write_1h": 30.00,
         "cache_hit": 1.50
+      }
+    },
+    "claude-sonnet-5-5": {
+      "display_name": "Claude Sonnet 5.5",
+      "standard": {
+        "input": 2.00,
+        "output": 10.00,
+        "cache_write_5m": 2.50,
+        "cache_write_1h": 4.00,
+        "cache_hit": 0.20
+      },
+      "long_context": {
+        "input": 2.00,
+        "output": 10.00,
+        "cache_write_5m": 2.50,
+        "cache_write_1h": 4.00,
+        "cache_hit": 0.20
       }
     },
     "claude-sonnet-5": {

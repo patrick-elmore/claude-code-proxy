@@ -14,12 +14,26 @@ public sealed class PricingCatalog
     private readonly HashSet<string> _missingModels = new();
     private readonly Lock _missingLock = new();
 
+    // Edits to pricing.json apply within this window without a restart; the check is one file stat.
+    private static readonly TimeSpan DefaultRefreshInterval = TimeSpan.FromMinutes(5);
+    private readonly string _path;
+    private readonly long _refreshIntervalMs;
+    private long _nextCheckTickMs;
+    private DateTime _loadedWriteTimeUtc;
+
     public DateTimeOffset? LastLoadedAt { get; private set; }
 
     public PricingCatalog(ILogger<PricingCatalog> logger)
+        : this(logger, Path.Combine(AppContext.BaseDirectory, "pricing.json"), DefaultRefreshInterval)
+    {
+    }
+
+    internal PricingCatalog(ILogger<PricingCatalog> logger, string path, TimeSpan refreshInterval)
     {
         _logger = logger;
-        var path = Path.Combine(AppContext.BaseDirectory, "pricing.json");
+        _path = path;
+        _refreshIntervalMs = (long)refreshInterval.TotalMilliseconds;
+        _nextCheckTickMs = Environment.TickCount64 + _refreshIntervalMs;
         if (!File.Exists(path))
         {
             _logger.LogWarning("pricing.json not found at {Path}; cost calculation will return $0", path);
@@ -27,10 +41,34 @@ public sealed class PricingCatalog
             return;
         }
 
+        _loadedWriteTimeUtc = File.GetLastWriteTimeUtc(path);
         using var doc = JsonDocument.Parse(File.ReadAllText(path));
         _models = ParseModels(doc.RootElement.GetProperty("models"));
         LastLoadedAt = DateTimeOffset.UtcNow;
         _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _models.Count, path);
+    }
+
+    private void RefreshIfDue()
+    {
+        var now = Environment.TickCount64;
+        var next = Volatile.Read(ref _nextCheckTickMs);
+        if (now < next) return;
+        // Only the thread that wins the swap performs the check for this interval.
+        if (Interlocked.CompareExchange(ref _nextCheckTickMs, now + _refreshIntervalMs, next) != next) return;
+
+        try
+        {
+            if (!File.Exists(_path)) return;
+            var writeTime = File.GetLastWriteTimeUtc(_path);
+            if (writeTime == _loadedWriteTimeUtc) return;
+            // Recorded before parsing so a malformed file is retried only once it changes again.
+            _loadedWriteTimeUtc = writeTime;
+            Reload(File.ReadAllText(_path));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pricing refresh check failed; keeping current rates");
+        }
     }
 
     public bool Reload(string json)
@@ -53,6 +91,7 @@ public sealed class PricingCatalog
 
     public IReadOnlyList<PricingRow> GetAllCurrentRates(DateOnly? onDate = null)
     {
+        RefreshIfDue();
         var snap = _models; // single volatile read → consistent snapshot
         var date = onDate ?? DateOnly.FromDateTime(DateTime.Now);
         return snap
@@ -118,6 +157,7 @@ public sealed class PricingCatalog
     {
         rates = default;
         if (model is null) return false;
+        RefreshIfDue();
         var key = StripVersion(model);
         if (_models.TryGetValue(key, out var pricing))
         {

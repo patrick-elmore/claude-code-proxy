@@ -62,7 +62,7 @@ Any unmet condition (missing `system` field, no bulk block, no boundary marker, 
 
 ### Pricing
 
-`PricingCatalog` loads `pricing.json` once at startup (USD per million tokens, standard tier only). A model may carry a `promotions` array of date-bounded rate overrides — selection is by the date being priced (the stats snapshot's date for historical renders, today for live), first matching window wins. Expired promotions must stay in the file: historical stats pages re-price past days on render. The file is refreshed manually via the `update-pricing` skill (`.claude/skills/update-pricing/`), which pulls Anthropic's published pricing page.
+`PricingCatalog` loads `pricing.json` at startup (USD per million tokens, standard tier only) and re-checks the file's last-write time at most every 5 minutes, hot-swapping the rates when it changes and keeping the old rates if the new file fails to parse. A model may carry a `promotions` array of date-bounded rate overrides — selection is by the date being priced (the stats snapshot's date for historical renders, today for live), first matching window wins. Expired promotions must stay in the file: historical stats pages re-price past days on render. The file is also refreshed by `PricingUpdater` (hourly) and manually via the `update-pricing` skill (`.claude/skills/update-pricing/`), which pulls Anthropic's published pricing page.
 
 ### Stats
 

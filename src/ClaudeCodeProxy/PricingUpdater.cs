@@ -1,5 +1,6 @@
 using System.Globalization;
-using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
@@ -9,11 +10,18 @@ namespace ClaudeCodeProxy;
 // The platform.claude.com/docs/en/ URL serves markdown directly — no HTML parsing needed.
 // Four safety gates: valid parse, minimum model count, no zero/negative rates, no rate changed > 10×.
 // Any gate failure leaves the existing pricing.json and in-memory catalog untouched.
+// Parsed rates are merged into the existing file: promotions, long_context, and models absent from the page are kept.
 public sealed partial class PricingUpdater : BackgroundService
 {
     private const string PricingDocUrl = "https://platform.claude.com/docs/en/about-claude/pricing";
     private const int MinModelCount = 4;
     private const decimal MaxRateFactor = 10m;
+
+    private static readonly JsonSerializerOptions WriteOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private readonly PricingCatalog _catalog;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -87,13 +95,31 @@ public sealed partial class PricingUpdater : BackgroundService
             }
         }
 
-        var newJson = BuildPricingJson(models);
-
-        // Write before reload so the new prices survive a restart.
         var path = Path.Combine(AppContext.BaseDirectory, "pricing.json");
+        string? newJson;
         try
         {
-            await File.WriteAllTextAsync(path, newJson, Encoding.UTF8, ct);
+            var existingJson = File.Exists(path) ? await File.ReadAllTextAsync(path, ct) : null;
+            newJson = MergeIntoExisting(existingJson, models);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Pricing update: failed to merge parsed rates into {Path}; skipping", path);
+            return;
+        }
+
+        if (newJson is null)
+        {
+            _logger.LogDebug("Pricing update: no changes");
+            return;
+        }
+
+        // Write before reload so the new prices survive a restart. Temp file + move keeps readers from seeing a partial file.
+        try
+        {
+            var tempPath = path + ".tmp";
+            await File.WriteAllTextAsync(tempPath, newJson, ct);
+            File.Move(tempPath, path, overwrite: true);
         }
         catch (Exception ex)
         {
@@ -102,13 +128,85 @@ public sealed partial class PricingUpdater : BackgroundService
         }
 
         if (_catalog.Reload(newJson))
-            _logger.LogInformation("Pricing update: applied {Count} models", models.Count);
+            _logger.LogInformation("Pricing update: applied changes ({Count} models parsed)", models.Count);
         else
             _logger.LogWarning("Pricing update: file written but catalog reload failed");
     }
 
     internal static List<ParsedModel> ParsePricingPage(string content) =>
         ParseTableLines(content.Split('\n'));
+
+    // Returns the updated file content, or null when the parsed rates match what the file already has.
+    internal static string? MergeIntoExisting(string? existingJson, List<ParsedModel> models)
+    {
+        JsonObject root;
+        try
+        {
+            root = (existingJson is null ? null : JsonNode.Parse(existingJson) as JsonObject) ?? BuildDefaultRoot();
+        }
+        catch (JsonException)
+        {
+            root = BuildDefaultRoot();
+        }
+
+        if (root["models"] is not JsonObject modelsObj)
+        {
+            modelsObj = new JsonObject();
+            root["models"] = modelsObj;
+        }
+
+        var changed = false;
+        var inserted = 0;
+        foreach (var m in models)
+        {
+            if (modelsObj[m.ModelId] is JsonObject entry)
+            {
+                if ((string?)entry["display_name"] == m.DisplayName
+                    && entry["standard"] is JsonObject standard
+                    && StandardMatches(standard, m))
+                    continue;
+
+                entry["display_name"] = m.DisplayName;
+                entry["standard"] = StandardNode(m);
+                changed = true;
+            }
+            else
+            {
+                // Newest models are listed first on the page and in the file.
+                modelsObj.Insert(inserted++, m.ModelId, new JsonObject
+                {
+                    ["display_name"] = m.DisplayName,
+                    ["standard"] = StandardNode(m)
+                });
+                changed = true;
+            }
+        }
+
+        return changed ? root.ToJsonString(WriteOptions) : null;
+    }
+
+    private static bool StandardMatches(JsonObject standard, ParsedModel m) =>
+        (decimal?)standard["input"] == m.Input
+        && (decimal?)standard["output"] == m.Output
+        && (decimal?)standard["cache_write_5m"] == m.CacheWrite5m
+        && (decimal?)standard["cache_write_1h"] == m.CacheWrite1h
+        && (decimal?)standard["cache_hit"] == m.CacheHit;
+
+    private static JsonObject StandardNode(ParsedModel m) => new()
+    {
+        ["input"]          = JsonValue.Create(m.Input),
+        ["output"]         = JsonValue.Create(m.Output),
+        ["cache_write_5m"] = JsonValue.Create(m.CacheWrite5m),
+        ["cache_write_1h"] = JsonValue.Create(m.CacheWrite1h),
+        ["cache_hit"]      = JsonValue.Create(m.CacheHit)
+    };
+
+    private static JsonObject BuildDefaultRoot() => new()
+    {
+        ["currency"] = "USD",
+        ["unit_per_million_tokens"] = true,
+        ["long_context_threshold_input_tokens"] = 200000
+    };
 
     private static List<ParsedModel> ParseTableLines(string[] lines)
     {
@@ -215,49 +313,6 @@ public sealed partial class PricingUpdater : BackgroundService
         var ratio = updated / existing;
         return ratio <= factor && ratio >= 1m / factor;
     }
-
-    private static string BuildPricingJson(List<ParsedModel> models)
-    {
-        // Preserve top-level metadata (currency, notes, etc.) from the existing file.
-        var path = Path.Combine(AppContext.BaseDirectory, "pricing.json");
-        JsonObject root;
-        if (File.Exists(path))
-        {
-            try { root = (JsonNode.Parse(File.ReadAllText(path)) as JsonObject) ?? BuildDefaultRoot(); }
-            catch { root = BuildDefaultRoot(); }
-        }
-        else
-        {
-            root = BuildDefaultRoot();
-        }
-
-        var modelsObj = new JsonObject();
-        foreach (var m in models)
-        {
-            modelsObj[m.ModelId] = new JsonObject
-            {
-                ["display_name"] = m.DisplayName,
-                ["standard"] = new JsonObject
-                {
-                    ["input"]          = JsonValue.Create(m.Input),
-                    ["output"]         = JsonValue.Create(m.Output),
-                    ["cache_write_5m"] = JsonValue.Create(m.CacheWrite5m),
-                    ["cache_write_1h"] = JsonValue.Create(m.CacheWrite1h),
-                    ["cache_hit"]      = JsonValue.Create(m.CacheHit)
-                }
-            };
-        }
-        root["models"] = modelsObj;
-
-        return root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-    }
-
-    private static JsonObject BuildDefaultRoot() => new()
-    {
-        ["currency"] = "USD",
-        ["unit_per_million_tokens"] = true,
-        ["long_context_threshold_input_tokens"] = 200000
-    };
 
     [GeneratedRegex(@"\[([^\]]+)\]\([^)]+\)")]
     private static partial Regex MarkdownLinkRegex();
