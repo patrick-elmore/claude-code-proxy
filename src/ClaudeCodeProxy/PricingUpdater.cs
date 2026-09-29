@@ -1,37 +1,44 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace ClaudeCodeProxy;
 
-// Fetches the Anthropic pricing docs page hourly and hot-reloads PricingCatalog when rates change.
-// The platform.claude.com/docs/en/ URL serves markdown directly — no HTML parsing needed.
-// Four safety gates: valid parse, minimum model count, no zero/negative rates, no rate changed > 10×.
-// Any gate failure leaves the existing pricing.json and in-memory catalog untouched.
-// Parsed rates are merged into the existing file: promotions, long_context, and models absent from the page are kept.
+// Hourly: downloads Anthropic's pricing page as markdown, parses the model pricing table, regenerates pricing.json
+// in memory, and rewrites the file only when the SHA-256 of the new content differs from the file on disk.
+// A change invalidates PricingCatalog so the next lookup reloads it.
+//
+// Generation is a pure function of (page, existing file), so an unchanged page always yields identical bytes.
+// Promotions, long_context, other per-model fields, top-level metadata, and models absent from the page are
+// carried over from the existing file (expired promotions and retired models are needed for historical stats).
+//
+// Any guard failure (fetch, parse, sanity check, validation) leaves pricing.json and the in-memory table untouched.
 public sealed partial class PricingUpdater : BackgroundService
 {
-    private const string PricingDocUrl = "https://platform.claude.com/docs/en/about-claude/pricing";
+    private const string PricingDocUrl = "https://platform.claude.com/docs/en/about-claude/pricing.md";
     private const int MinModelCount = 4;
     private const decimal MaxRateFactor = 10m;
-
-    private static readonly JsonSerializerOptions WriteOptions = new()
-    {
-        WriteIndented = true,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-    };
 
     private readonly PricingCatalog _catalog;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<PricingUpdater> _logger;
+    private readonly string _pricingPath;
 
     public PricingUpdater(PricingCatalog catalog, IHttpClientFactory httpClientFactory, ILogger<PricingUpdater> logger)
+        : this(catalog, httpClientFactory, logger, Path.Combine(AppContext.BaseDirectory, "pricing.json"))
+    {
+    }
+
+    internal PricingUpdater(PricingCatalog catalog, IHttpClientFactory httpClientFactory,
+        ILogger<PricingUpdater> logger, string pricingPath)
     {
         _catalog = catalog;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _pricingPath = pricingPath;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -44,17 +51,19 @@ public sealed partial class PricingUpdater : BackgroundService
             await TryUpdateAsync(ct);
     }
 
-    private async Task TryUpdateAsync(CancellationToken ct)
+    internal async Task TryUpdateAsync(CancellationToken ct)
     {
         string content;
         try
         {
             var client = _httpClientFactory.CreateClient("pricing-docs");
-            content = await client.GetStringAsync(PricingDocUrl, ct);
+            using var response = await client.GetAsync(PricingDocUrl, ct);
+            response.EnsureSuccessStatusCode();
+            content = await response.Content.ReadAsStringAsync(ct);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Pricing update: failed to fetch {Url}", PricingDocUrl);
+            _logger.LogWarning(ex, "Pricing update: failed to fetch {Url}; keeping existing pricing", PricingDocUrl);
             return;
         }
 
@@ -65,148 +74,197 @@ public sealed partial class PricingUpdater : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Pricing update: failed to parse pricing page content");
+            _logger.LogWarning(ex, "Pricing update: pricing page did not parse; keeping existing pricing");
             return;
         }
 
-        // Gate 1: enough models to be a plausible parse
-        if (models.Count < MinModelCount)
+        var problem = FindProblem(models, _catalog);
+        if (problem is not null)
         {
-            _logger.LogWarning("Pricing update: only {Count} models parsed (min {Min}); skipping", models.Count, MinModelCount);
+            _logger.LogWarning("Pricing update: {Problem}; keeping existing pricing", problem);
             return;
         }
 
-        // Gate 2: no zero or negative rates
-        var badRate = models.Find(m => m.Input <= 0 || m.Output <= 0 || m.CacheWrite5m <= 0 || m.CacheWrite1h <= 0 || m.CacheHit <= 0);
-        if (badRate is not null)
-        {
-            _logger.LogWarning("Pricing update: model '{Model}' has a non-positive rate; skipping", badRate.ModelId);
-            return;
-        }
-
-        // Gate 3: continuity — for models in both old and new data, no single rate may change by > 10×
-        foreach (var m in models)
-        {
-            if (!_catalog.TryGetRates(m.ModelId, out var existing)) continue;
-            if (!RatesWithinFactor(existing, m, MaxRateFactor))
-            {
-                _logger.LogWarning("Pricing update: model '{Model}' has a rate change exceeding {Factor}×; skipping", m.ModelId, MaxRateFactor);
-                return;
-            }
-        }
-
-        var path = Path.Combine(AppContext.BaseDirectory, "pricing.json");
-        string? newJson;
+        var path = _pricingPath;
+        byte[]? existingBytes;
+        byte[] newBytes;
         try
         {
-            var existingJson = File.Exists(path) ? await File.ReadAllTextAsync(path, ct) : null;
-            newJson = MergeIntoExisting(existingJson, models);
+            existingBytes = File.Exists(path) ? await File.ReadAllBytesAsync(path, ct) : null;
+            var existingJson = existingBytes is null ? null : Encoding.UTF8.GetString(existingBytes);
+            var newJson = GeneratePricingJson(existingJson, models);
+
+            if (!PricingCatalog.IsValid(newJson))
+            {
+                _logger.LogWarning("Pricing update: generated pricing.json failed validation; keeping existing pricing");
+                return;
+            }
+
+            newBytes = Encoding.UTF8.GetBytes(newJson);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Pricing update: failed to merge parsed rates into {Path}; skipping", path);
+            _logger.LogWarning(ex, "Pricing update: failed to generate pricing.json; keeping existing pricing");
             return;
         }
 
-        if (newJson is null)
+        var newHash = Convert.ToHexString(SHA256.HashData(newBytes));
+        var existingHash = existingBytes is null ? null : Convert.ToHexString(SHA256.HashData(existingBytes));
+        if (newHash == existingHash)
         {
-            _logger.LogDebug("Pricing update: no changes");
+            _logger.LogDebug("Pricing update: no changes (sha256 {Hash})", newHash[..12]);
             return;
         }
 
-        // Write before reload so the new prices survive a restart. Temp file + move keeps readers from seeing a partial file.
+        // Temp file + move keeps a concurrent reader from ever seeing a partial file.
         try
         {
             var tempPath = path + ".tmp";
-            await File.WriteAllTextAsync(tempPath, newJson, ct);
+            await File.WriteAllBytesAsync(tempPath, newBytes, ct);
             File.Move(tempPath, path, overwrite: true);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            _logger.LogError(ex, "Pricing update: failed to write {Path}; catalog not reloaded", path);
+            _logger.LogError(ex, "Pricing update: failed to write {Path}; keeping existing pricing", path);
             return;
         }
 
-        if (_catalog.Reload(newJson))
-            _logger.LogInformation("Pricing update: applied changes ({Count} models parsed)", models.Count);
-        else
-            _logger.LogWarning("Pricing update: file written but catalog reload failed");
+        _catalog.Invalidate();
+        _logger.LogInformation("Pricing update: wrote {Path} ({Count} models parsed, sha256 {Old} -> {New})",
+            path, models.Count, existingHash?[..12] ?? "none", newHash[..12]);
     }
 
     internal static List<ParsedModel> ParsePricingPage(string content) =>
         ParseTableLines(content.Split('\n'));
 
-    // Returns the updated file content, or null when the parsed rates match what the file already has.
-    internal static string? MergeIntoExisting(string? existingJson, List<ParsedModel> models)
+    // Returns a description of the first sanity-check failure, or null when the parsed data is safe to apply.
+    internal static string? FindProblem(List<ParsedModel> models, PricingCatalog catalog)
     {
-        JsonObject root;
+        if (models.Count < MinModelCount)
+            return $"only {models.Count} models parsed (min {MinModelCount})";
+
+        var duplicate = models.GroupBy(m => m.ModelId).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            return $"model id '{duplicate.Key}' appears more than once";
+
+        var badRate = models.Find(m => m.Input <= 0 || m.Output <= 0 || m.CacheWrite5m <= 0 || m.CacheWrite1h <= 0 || m.CacheHit <= 0);
+        if (badRate is not null)
+            return $"model '{badRate.ModelId}' has a non-positive rate";
+
+        // For models in both old and new data, no single rate may change by more than MaxRateFactor.
+        foreach (var m in models)
+        {
+            if (catalog.TryGetRates(m.ModelId, out var existing) && !RatesWithinFactor(existing, m, MaxRateFactor))
+                return $"model '{m.ModelId}' has a rate change exceeding {MaxRateFactor}x";
+        }
+
+        return null;
+    }
+
+    // Deterministic: fixed property order, LF newlines, rates formatted to at least two decimals, one trailing newline.
+    internal static string GeneratePricingJson(string? existingJson, IReadOnlyList<ParsedModel> models)
+    {
+        var duplicate = models.GroupBy(m => m.ModelId).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+            throw new InvalidOperationException($"Duplicate model id '{duplicate.Key}'");
+
+        JsonDocument? existingDoc = null;
         try
         {
-            root = (existingJson is null ? null : JsonNode.Parse(existingJson) as JsonObject) ?? BuildDefaultRoot();
+            if (existingJson is not null)
+                existingDoc = JsonDocument.Parse(existingJson);
         }
         catch (JsonException)
         {
-            root = BuildDefaultRoot();
+            // An unreadable existing file is regenerated from defaults.
         }
 
-        if (root["models"] is not JsonObject modelsObj)
+        using (existingDoc)
         {
-            modelsObj = new JsonObject();
-            root["models"] = modelsObj;
-        }
+            JsonElement? existingRoot = existingDoc is { RootElement.ValueKind: JsonValueKind.Object }
+                ? existingDoc.RootElement
+                : null;
+            JsonElement? existingModels = existingRoot is { } root
+                && root.TryGetProperty("models", out var m) && m.ValueKind == JsonValueKind.Object
+                    ? m
+                    : null;
 
-        var changed = false;
-        var inserted = 0;
-        foreach (var m in models)
-        {
-            if (modelsObj[m.ModelId] is JsonObject entry)
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
             {
-                if ((string?)entry["display_name"] == m.DisplayName
-                    && entry["standard"] is JsonObject standard
-                    && StandardMatches(standard, m))
-                    continue;
+                Indented = true,
+                IndentSize = 2,
+                NewLine = "\n",
+                Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+            }))
+            {
+                writer.WriteStartObject();
 
-                entry["display_name"] = m.DisplayName;
-                entry["standard"] = StandardNode(m);
-                changed = true;
-            }
-            else
-            {
-                // Newest models are listed first on the page and in the file.
-                modelsObj.Insert(inserted++, m.ModelId, new JsonObject
+                if (existingRoot is { } top)
                 {
-                    ["display_name"] = m.DisplayName,
-                    ["standard"] = StandardNode(m)
-                });
-                changed = true;
-            }
-        }
+                    foreach (var prop in top.EnumerateObject().Where(p => p.Name != "models"))
+                        prop.WriteTo(writer);
+                }
+                else
+                {
+                    writer.WriteString("currency", "USD");
+                    writer.WriteBoolean("unit_per_million_tokens", true);
+                    writer.WriteNumber("long_context_threshold_input_tokens", 200000);
+                }
 
-        return changed ? root.ToJsonString(WriteOptions) : null;
+                writer.WritePropertyName("models");
+                writer.WriteStartObject();
+
+                var pageIds = new HashSet<string>(models.Select(x => x.ModelId));
+                foreach (var model in models)
+                {
+                    writer.WritePropertyName(model.ModelId);
+                    writer.WriteStartObject();
+                    writer.WriteString("display_name", model.DisplayName);
+                    writer.WritePropertyName("standard");
+                    WriteRates(writer, model);
+
+                    if (existingModels is { } em
+                        && em.TryGetProperty(model.ModelId, out var entry) && entry.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var prop in entry.EnumerateObject()
+                                     .Where(p => p.Name is not ("display_name" or "standard")))
+                            prop.WriteTo(writer);
+                    }
+
+                    writer.WriteEndObject();
+                }
+
+                if (existingModels is { } carried)
+                {
+                    foreach (var prop in carried.EnumerateObject().Where(p => !pageIds.Contains(p.Name)))
+                        prop.WriteTo(writer);
+                }
+
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+
+            return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length) + "\n";
+        }
     }
 
-    private static bool StandardMatches(JsonObject standard, ParsedModel m) =>
-        (decimal?)standard["input"] == m.Input
-        && (decimal?)standard["output"] == m.Output
-        && (decimal?)standard["cache_write_5m"] == m.CacheWrite5m
-        && (decimal?)standard["cache_write_1h"] == m.CacheWrite1h
-        && (decimal?)standard["cache_hit"] == m.CacheHit;
-
-    private static JsonObject StandardNode(ParsedModel m) => new()
+    private static void WriteRates(Utf8JsonWriter writer, ParsedModel m)
     {
-        ["input"]          = JsonValue.Create(m.Input),
-        ["output"]         = JsonValue.Create(m.Output),
-        ["cache_write_5m"] = JsonValue.Create(m.CacheWrite5m),
-        ["cache_write_1h"] = JsonValue.Create(m.CacheWrite1h),
-        ["cache_hit"]      = JsonValue.Create(m.CacheHit)
-    };
+        writer.WriteStartObject();
+        WriteRate(writer, "input", m.Input);
+        WriteRate(writer, "output", m.Output);
+        WriteRate(writer, "cache_write_5m", m.CacheWrite5m);
+        WriteRate(writer, "cache_write_1h", m.CacheWrite1h);
+        WriteRate(writer, "cache_hit", m.CacheHit);
+        writer.WriteEndObject();
+    }
 
-    private static JsonObject BuildDefaultRoot() => new()
+    private static void WriteRate(Utf8JsonWriter writer, string name, decimal value)
     {
-        ["currency"] = "USD",
-        ["unit_per_million_tokens"] = true,
-        ["long_context_threshold_input_tokens"] = 200000
-    };
+        writer.WritePropertyName(name);
+        writer.WriteRawValue(value.ToString("0.00####", CultureInfo.InvariantCulture));
+    }
 
     private static List<ParsedModel> ParseTableLines(string[] lines)
     {

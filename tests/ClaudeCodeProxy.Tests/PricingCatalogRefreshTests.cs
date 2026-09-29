@@ -93,6 +93,18 @@ public sealed class PricingCatalogRefreshTests : IDisposable
     }
 
     [Fact]
+    public void TryGetRates_InvalidatedBeforeIntervalElapses_ReturnsNewRatesEvenWithSameWriteTime()
+    {
+        WriteRevision(PricingJson(3.0m), 1);
+        var catalog = Build(TimeSpan.FromHours(1));
+
+        WriteRevision(PricingJson(7.0m), 1);
+        catalog.Invalidate();
+
+        InputRate(catalog).ShouldBe(7.0m);
+    }
+
+    [Fact]
     public void TryGetRates_FileCreatedAfterMissingAtStartup_ReturnsRates()
     {
         var catalog = Build(TimeSpan.Zero);

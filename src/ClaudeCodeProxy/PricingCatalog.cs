@@ -19,6 +19,7 @@ public sealed class PricingCatalog
     private readonly string _path;
     private readonly long _refreshIntervalMs;
     private long _nextCheckTickMs;
+    private int _forceReload;
     private DateTime _loadedWriteTimeUtc;
 
     public DateTimeOffset? LastLoadedAt { get; private set; }
@@ -48,6 +49,27 @@ public sealed class PricingCatalog
         _logger.LogInformation("Loaded pricing for {Count} models from {Path}", _models.Count, path);
     }
 
+    // Marks the cached table stale: the next lookup re-reads the file regardless of the refresh interval or write time.
+    public void Invalidate()
+    {
+        Volatile.Write(ref _forceReload, 1);
+        Volatile.Write(ref _nextCheckTickMs, 0);
+    }
+
+    internal static bool IsValid(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return ParseModels(doc.RootElement.GetProperty("models")).Count > 0;
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException
+                                       or FormatException)
+        {
+            return false;
+        }
+    }
+
     private void RefreshIfDue()
     {
         var now = Environment.TickCount64;
@@ -58,9 +80,10 @@ public sealed class PricingCatalog
 
         try
         {
+            var forced = Interlocked.Exchange(ref _forceReload, 0) == 1;
             if (!File.Exists(_path)) return;
             var writeTime = File.GetLastWriteTimeUtc(_path);
-            if (writeTime == _loadedWriteTimeUtc) return;
+            if (writeTime == _loadedWriteTimeUtc && !forced) return;
             // Recorded before parsing so a malformed file is retried only once it changes again.
             _loadedWriteTimeUtc = writeTime;
             Reload(File.ReadAllText(_path));
