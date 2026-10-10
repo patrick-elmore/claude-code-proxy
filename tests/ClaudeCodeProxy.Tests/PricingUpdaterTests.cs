@@ -23,6 +23,14 @@ public sealed class PricingUpdaterTests
         """;
 
 
+    private const string TwoTierMarkdown = """
+        | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
+        | --- | --- | --- | --- | --- | --- |
+        | Claude Haiku 5.5 (for prompts up to 100,000 tokens) | $0.10 / MTok | $0.125 / MTok | $0.20 / MTok | $0.01 / MTok | $0.50 / MTok |
+        | Claude Haiku 5.5 (for prompts over 100,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok | $0.05 / MTok | $2.50 / MTok |
+        | Claude Haiku 4.5 | $1 / MTok | $1.25 / MTok | $2 / MTok | $0.10 / MTok | $5 / MTok |
+        """;
+
     // --- ParsePricingPage ---
 
     [Fact]
@@ -74,6 +82,50 @@ public sealed class PricingUpdaterTests
 
         opus41.ShouldNotBeNull();
         opus41.DisplayName.ShouldBe("Claude Opus 4.1");
+    }
+
+    [Fact]
+    public void ParsePricingPage_TwoTierRows_ReturnsSingleModel()
+    {
+        PricingUpdater.ParsePricingPage(TwoTierMarkdown).Count(m => m.ModelId == "claude-haiku-5-5").ShouldBe(1);
+    }
+
+    [Fact]
+    public void ParsePricingPage_TwoTierRows_StandardRatesFromUpToRow()
+    {
+        var haiku = PricingUpdater.ParsePricingPage(TwoTierMarkdown).Single(m => m.ModelId == "claude-haiku-5-5");
+
+        haiku.Input.ShouldBe(0.10m);
+        haiku.Output.ShouldBe(0.50m);
+    }
+
+    [Fact]
+    public void ParsePricingPage_TwoTierRows_LongContextRatesFromOverRow()
+    {
+        var haiku = PricingUpdater.ParsePricingPage(TwoTierMarkdown).Single(m => m.ModelId == "claude-haiku-5-5");
+
+        haiku.LongContext!.Input.ShouldBe(0.50m);
+        haiku.LongContext.Output.ShouldBe(2.50m);
+    }
+
+    [Fact]
+    public void ParsePricingPage_TwoTierRows_LongContextThresholdFromOverRow()
+    {
+        var haiku = PricingUpdater.ParsePricingPage(TwoTierMarkdown).Single(m => m.ModelId == "claude-haiku-5-5");
+
+        haiku.LongContext!.ThresholdInputTokens.ShouldBe(100000);
+    }
+
+    [Fact]
+    public void ParsePricingPage_OverRowWithoutStandardRow_Throws()
+    {
+        const string orphan = """
+            | Model | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
+            | --- | --- | --- | --- | --- | --- |
+            | Claude Haiku 5.5 (for prompts over 100,000 tokens) | $0.50 / MTok | $0.625 / MTok | $1 / MTok | $0.05 / MTok | $2.50 / MTok |
+            """;
+
+        Should.Throw<InvalidOperationException>(() => PricingUpdater.ParsePricingPage(orphan));
     }
 
     // --- ToModelId ---

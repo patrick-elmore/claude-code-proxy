@@ -110,4 +110,116 @@ public sealed class PricingCatalogTests
         catalog.TryGetRates("test-model", out var rates).ShouldBeTrue();
         rates.Input.ShouldBe(3.0m);
     }
+
+    private const string TieredJson = """
+        {
+          "models": {
+            "tiered": {
+              "standard": {
+                "input": 0.10, "output": 0.50,
+                "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_hit": 0.01
+              },
+              "long_context": {
+                "input": 0.50, "output": 2.50,
+                "cache_write_5m": 0.625, "cache_write_1h": 1.00, "cache_hit": 0.05
+              },
+              "long_context_threshold_input_tokens": 100000
+            },
+            "untiered": {
+              "standard": {
+                "input": 1.00, "output": 5.00,
+                "cache_write_5m": 1.25, "cache_write_1h": 2.00, "cache_hit": 0.10
+              },
+              "long_context": {
+                "input": 2.00, "output": 10.00,
+                "cache_write_5m": 2.50, "cache_write_1h": 4.00, "cache_hit": 0.20
+              }
+            }
+          }
+        }
+        """;
+
+    [Fact]
+    public void CalculateCostUsd_PromptAtTierThreshold_UsesStandardRates()
+    {
+        var catalog = Build();
+        catalog.Reload(TieredJson);
+
+        catalog.CalculateCostUsd("tiered", inputUncached: 100_000, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0)
+            .ShouldBe(0.01m);
+    }
+
+    [Fact]
+    public void CalculateCostUsd_PromptOverTierThreshold_UsesLongContextRatesForAllTokens()
+    {
+        var catalog = Build();
+        catalog.Reload(TieredJson);
+
+        catalog.CalculateCostUsd("tiered", inputUncached: 100_001, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0)
+            .ShouldBe(0.0500005m);
+    }
+
+    [Fact]
+    public void CalculateCostUsd_CacheReadsCountTowardPromptSize()
+    {
+        var catalog = Build();
+        catalog.Reload(TieredJson);
+
+        catalog.CalculateCostUsd("tiered", inputUncached: 50_000, cacheRead: 50_001, cacheWrite5m: 0, cacheWrite1h: 0, output: 0)
+            .ShouldBe(0.02750005m);
+    }
+
+    private const string DatedChangeJson = """
+        {
+          "models": {
+            "dated": {
+              "standard": {
+                "input": 2.00, "output": 10.00,
+                "cache_write_5m": 2.50, "cache_write_1h": 4.00, "cache_hit": 0.10
+              },
+              "promotions": [
+                {
+                  "description": "Standard rates before 2026-10-07 update",
+                  "starts": "2000-01-01",
+                  "ends": "2026-10-06",
+                  "rates": {
+                    "input": 2.00, "output": 10.00,
+                    "cache_write_5m": 2.50, "cache_write_1h": 4.00, "cache_hit": 0.20
+                  }
+                }
+              ]
+            }
+          }
+        }
+        """;
+
+    [Fact]
+    public void CalculateCostUsd_DayBeforeChange_UsesPreviousRates()
+    {
+        var catalog = Build();
+        catalog.Reload(DatedChangeJson);
+
+        catalog.CalculateCostUsd("dated", inputUncached: 0, cacheRead: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 0, output: 0,
+            onDate: new DateOnly(2026, 10, 6)).ShouldBe(0.20m);
+    }
+
+    [Fact]
+    public void CalculateCostUsd_ChangeDay_UsesNewRates()
+    {
+        var catalog = Build();
+        catalog.Reload(DatedChangeJson);
+
+        catalog.CalculateCostUsd("dated", inputUncached: 0, cacheRead: 1_000_000, cacheWrite5m: 0, cacheWrite1h: 0, output: 0,
+            onDate: new DateOnly(2026, 10, 7)).ShouldBe(0.10m);
+    }
+
+    [Fact]
+    public void CalculateCostUsd_ModelWithoutPerModelThreshold_IgnoresLongContext()
+    {
+        var catalog = Build();
+        catalog.Reload(TieredJson);
+
+        catalog.CalculateCostUsd("untiered", inputUncached: 200_000, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, output: 0)
+            .ShouldBe(0.20m);
+    }
 }

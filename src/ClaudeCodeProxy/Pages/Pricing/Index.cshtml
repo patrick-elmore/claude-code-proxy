@@ -9,7 +9,11 @@
     <div class="page-header-icon"><partial name="_HeaderIcon" /></div>
 </header>
 <section>
-    <h2>Current rates <span class="muted" style="font-weight:normal;font-size:.85rem;">USD / million tokens</span></h2>
+    <h2>Rates in effect <span class="muted" style="font-weight:normal;font-size:.85rem;">on @Model.EffectiveDate.ToString("yyyy-MM-dd") · USD / million tokens</span></h2>
+    <form method="get" style="margin-bottom:.6rem;">
+        <label>date <input type="date" name="date" value="@Model.EffectiveDate.ToString("yyyy-MM-dd")"></label>
+        <button type="submit">show</button>
+    </form>
     <div class="table-wrap"><table>
         <thead><tr>
             <th scope="col">model</th>
@@ -33,9 +37,21 @@
                 <td class="num">@Price(row.Rates.CacheWrite1h)</td>
                 <td class="num">@Price(row.Rates.CacheHit)</td>
             </tr>
+            @if (row.LongContext is { } tier)
+            {
+                <tr>
+                    <td>over @tier.ThresholdInputTokens.ToString("N0") input tokens <span class="muted">long context</span></td>
+                    <td class="num">@Price(tier.Rates.Input)</td>
+                    <td class="num">@Price(tier.Rates.Output)</td>
+                    <td class="num">@Price(tier.Rates.CacheWrite5m)</td>
+                    <td class="num">@Price(tier.Rates.CacheWrite1h)</td>
+                    <td class="num">@Price(tier.Rates.CacheHit)</td>
+                </tr>
+            }
         }
         </tbody>
     </table></div>
+    <p class="muted" style="margin-top:.6rem;font-size:.85rem;">Long-context rates apply to every token of a request whose prompt (uncached input, cache reads, and cache writes) is over the listed input token count.</p>
     <p class="muted" style="margin-top:.6rem;font-size:.85rem;">
         @if (Model.LastLoadedAt.HasValue)
         {
@@ -44,10 +60,64 @@
         <a href="https://platform.claude.com/docs/en/about-claude/pricing" target="_blank" rel="noopener">Anthropic pricing docs ↗</a>
     </p>
 </section>
+<section>
+    <h2>Rate schedule <span class="muted" style="font-weight:normal;font-size:.85rem;">by effective date · requests are priced at the rate in effect on their day</span></h2>
+    <div class="table-wrap"><table>
+        <thead><tr>
+            <th scope="col">period</th>
+            <th scope="col" class="num">input</th>
+            <th scope="col" class="num">output</th>
+            <th scope="col" class="num">5m cache write</th>
+            <th scope="col" class="num">1h cache write</th>
+            <th scope="col" class="num">cache read</th>
+        </tr></thead>
+        <tbody>
+        @foreach (var schedule in Model.Schedule)
+        {
+            <tr>
+                <th colspan="6" scope="colgroup">
+                    <span class="mono">@schedule.ModelId</span>
+                    @if (schedule.DisplayName != schedule.ModelId) { <span class="muted">@schedule.DisplayName</span> }
+                </th>
+            </tr>
+            @foreach (var window in schedule.Windows)
+            {
+                <tr>
+                    <td>@window.Starts.ToString("yyyy-MM-dd") to @window.Ends.ToString("yyyy-MM-dd") @if (!string.IsNullOrEmpty(window.Description)) { <span class="muted">@window.Description</span> }</td>
+                    <td class="num">@Price(window.Rates.Input)</td>
+                    <td class="num">@Price(window.Rates.Output)</td>
+                    <td class="num">@Price(window.Rates.CacheWrite5m)</td>
+                    <td class="num">@Price(window.Rates.CacheWrite1h)</td>
+                    <td class="num">@Price(window.Rates.CacheHit)</td>
+                </tr>
+            }
+            <tr>
+                <td>@(schedule.StandardEffectiveFrom is { } effectiveFrom ? "from " + effectiveFrom.ToString("yyyy-MM-dd") : "no recorded change") <span class="muted">standard</span></td>
+                <td class="num">@Price(schedule.Standard.Input)</td>
+                <td class="num">@Price(schedule.Standard.Output)</td>
+                <td class="num">@Price(schedule.Standard.CacheWrite5m)</td>
+                <td class="num">@Price(schedule.Standard.CacheWrite1h)</td>
+                <td class="num">@Price(schedule.Standard.CacheHit)</td>
+            </tr>
+            @if (schedule.LongContext is { } tier)
+            {
+                <tr>
+                    <td>prompts over @tier.ThresholdInputTokens.ToString("N0") input tokens <span class="muted">long context</span></td>
+                    <td class="num">@Price(tier.Rates.Input)</td>
+                    <td class="num">@Price(tier.Rates.Output)</td>
+                    <td class="num">@Price(tier.Rates.CacheWrite5m)</td>
+                    <td class="num">@Price(tier.Rates.CacheWrite1h)</td>
+                    <td class="num">@Price(tier.Rates.CacheHit)</td>
+                </tr>
+            }
+        }
+        </tbody>
+    </table></div>
+</section>
 <footer>
     <a asp-page="/Stats/Index">← stats</a>
     <span class="version">v@AppVersion.Value</span>
 </footer>
 @functions {
-    static string Price(decimal v) => $"${v:0.##}";
+    static string Price(decimal v) => $"${v:0.00##}";
 }

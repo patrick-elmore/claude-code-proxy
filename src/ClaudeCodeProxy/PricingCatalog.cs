@@ -4,8 +4,9 @@ using System.Text.Json;
 
 namespace ClaudeCodeProxy;
 
-// Standard tier only — the 200K long-context threshold can't be detected without per-request input tracking.
 // Promotions are date-bounded rate overrides; the first window containing the requested date wins.
+// A model's long_context rates apply to every token of a request whose prompt exceeds that model's own
+// long_context_threshold_input_tokens. Models without a per-model threshold are priced at standard rates only.
 public sealed class PricingCatalog
 {
     // volatile so PricingUpdater can atomically swap the catalog hourly without a lock on the read path.
@@ -125,10 +126,33 @@ public sealed class PricingCatalog
                 {
                     if (date >= promo.Starts && date <= promo.Ends) { rates = promo.Rates; break; }
                 }
-                return new PricingRow(kvp.Key, kvp.Value.DisplayName, rates);
+                var longContext = kvp.Value.LongContext is { } tier
+                    ? new LongContextSchedule(tier.ThresholdInputTokens, tier.Rates)
+                    : null;
+                return new PricingRow(kvp.Key, kvp.Value.DisplayName, rates, longContext);
             })
             .OrderByDescending(r => r.Rates.Input)
             .ThenBy(r => r.ModelId)
+            .ToList();
+    }
+
+    public IReadOnlyList<ModelSchedule> GetRateSchedule()
+    {
+        RefreshIfDue();
+        return _models
+            .OrderBy(kvp => kvp.Key)
+            .Select(kvp =>
+            {
+                var p = kvp.Value;
+                var windows = p.Promotions
+                    .OrderBy(promo => promo.Starts)
+                    .Select(promo => new RateWindow(promo.Starts, promo.Ends, promo.Rates, promo.Description))
+                    .ToList();
+                var longContext = p.LongContext is { } tier
+                    ? new LongContextSchedule(tier.ThresholdInputTokens, tier.Rates)
+                    : null;
+                return new ModelSchedule(kvp.Key, p.DisplayName, p.StandardEffectiveFrom, p.Standard, windows, longContext);
+            })
             .ToList();
     }
 
@@ -140,16 +164,26 @@ public sealed class PricingCatalog
             var displayName = prop.Value.TryGetProperty("display_name", out var dn)
                 ? dn.GetString() ?? prop.Name : prop.Name;
             var standard = ReadRates(prop.Value.GetProperty("standard"));
+            DateOnly? standardEffectiveFrom = prop.Value.TryGetProperty("standard_effective_from", out var sef)
+                ? DateOnly.ParseExact(sef.GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture)
+                : null;
+            LongContextTier? longContext = null;
+            if (prop.Value.TryGetProperty("long_context", out var longContextRates)
+                && prop.Value.TryGetProperty("long_context_threshold_input_tokens", out var threshold))
+            {
+                longContext = new LongContextTier(threshold.GetInt64(), ReadRates(longContextRates));
+            }
             var promotions = Array.Empty<Promotion>();
             if (prop.Value.TryGetProperty("promotions", out var promoArray))
             {
                 promotions = promoArray.EnumerateArray().Select(p => new Promotion(
                     Starts: DateOnly.ParseExact(p.GetProperty("starts").GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture),
                     Ends: DateOnly.ParseExact(p.GetProperty("ends").GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture),
-                    Rates: ReadRates(p.GetProperty("rates"))
+                    Rates: ReadRates(p.GetProperty("rates")),
+                    Description: p.TryGetProperty("description", out var description) ? description.GetString() ?? "" : ""
                 )).ToArray();
             }
-            models[prop.Name] = new ModelPricing(displayName, standard, promotions);
+            models[prop.Name] = new ModelPricing(displayName, standard, standardEffectiveFrom, promotions, longContext);
         }
         return models.ToFrozenDictionary();
     }
@@ -166,7 +200,8 @@ public sealed class PricingCatalog
                                     long cacheWrite5m, long cacheWrite1h, long output,
                                     DateOnly? onDate = null)
     {
-        if (!TryGetRates(model, out var r, onDate)) return 0m;
+        var promptInputTokens = inputUncached + cacheRead + cacheWrite5m + cacheWrite1h;
+        if (!TryGetRates(model, out var r, onDate, promptInputTokens)) return 0m;
         return (
             inputUncached * r.Input +
             cacheRead * r.CacheHit +
@@ -176,7 +211,7 @@ public sealed class PricingCatalog
         ) / 1_000_000m;
     }
 
-    public bool TryGetRates(string? model, out RateBlock rates, DateOnly? onDate = null)
+    public bool TryGetRates(string? model, out RateBlock rates, DateOnly? onDate = null, long promptInputTokens = 0)
     {
         rates = default;
         if (model is null) return false;
@@ -195,6 +230,9 @@ public sealed class PricingCatalog
                     break;
                 }
             }
+            // The page's tier boundaries read "up to 100,000" and "over 100,000", so the tier starts above the threshold.
+            if (pricing.LongContext is { } tier && promptInputTokens > tier.ThresholdInputTokens)
+                rates = tier.Rates;
             return true;
         }
         // Log unknown models once so a typo or new model surfaces without spamming.
@@ -212,11 +250,21 @@ public sealed class PricingCatalog
         return idx > 0 ? model[..idx] : model;
     }
 
-    public sealed record PricingRow(string ModelId, string DisplayName, RateBlock Rates);
+    public sealed record PricingRow(string ModelId, string DisplayName, RateBlock Rates, LongContextSchedule? LongContext);
 
-    private sealed record ModelPricing(string DisplayName, RateBlock Standard, Promotion[] Promotions);
+    private sealed record ModelPricing(string DisplayName, RateBlock Standard, DateOnly? StandardEffectiveFrom,
+        Promotion[] Promotions, LongContextTier? LongContext);
 
-    private readonly record struct Promotion(DateOnly Starts, DateOnly Ends, RateBlock Rates);
+    private readonly record struct LongContextTier(long ThresholdInputTokens, RateBlock Rates);
+
+    private readonly record struct Promotion(DateOnly Starts, DateOnly Ends, RateBlock Rates, string Description);
+
+    public sealed record RateWindow(DateOnly Starts, DateOnly Ends, RateBlock Rates, string Description);
+
+    public sealed record LongContextSchedule(long ThresholdInputTokens, RateBlock Rates);
+
+    public sealed record ModelSchedule(string ModelId, string DisplayName, DateOnly? StandardEffectiveFrom,
+        RateBlock Standard, IReadOnlyList<RateWindow> Windows, LongContextSchedule? LongContext);
 
     public readonly record struct RateBlock(
         decimal Input,

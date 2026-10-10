@@ -39,6 +39,14 @@ public sealed class PricingUpdaterGuardTests
     }
 
     [Fact]
+    public void FindProblem_NonPositiveLongContextRate_ReportsModel()
+    {
+        var tiered = new ParsedModel("h", "H", 3m, 15m, 3.75m, 4.5m, 0.3m, new LongContextRates(100000, 0m, 15m, 3.75m, 4.5m, 0.3m));
+
+        PricingUpdater.FindProblem([.. Healthy(), tiered], Catalog)!.ShouldContain("'h' has a non-positive rate");
+    }
+
+    [Fact]
     public void FindProblem_RateChangedMoreThanTenfoldForKnownModel_ReportsModel()
     {
         PricingUpdater.FindProblem([.. Healthy(), Model("test-model", input: 40m)], Catalog)!.ShouldContain("'test-model' has a rate change exceeding");
